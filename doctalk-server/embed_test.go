@@ -136,6 +136,50 @@ func TestGeminiEmbedBatchAnd429Retry(t *testing.T) {
 	}
 }
 
+func TestGeminiEmbedRetries500SameModel(t *testing.T) {
+	var hits atomic.Int32
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		paths = append(paths, r.URL.Path)
+		if hits.Load() == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"error":{"status":"UNAVAILABLE","message":"high demand"}}`))
+			return
+		}
+		vals := make([]float64, EmbeddingDim)
+		vals[0] = 1
+		_ = json.NewEncoder(w).Encode(map[string]any{"embeddings": []any{map[string]any{"values": vals}}})
+	}))
+	defer srv.Close()
+
+	g := &geminiEmbedder{
+		apiKey:     "k",
+		model:      defaultEmbedModel,
+		baseURL:    srv.URL,
+		http:       srv.Client(),
+		batchSize:  8,
+		maxRetries: 3,
+		sleep:      func(context.Context, time.Duration) error { return nil },
+	}
+	vecs, err := g.Embed(context.Background(), []string{"hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vecs) != 1 || len(vecs[0]) != EmbeddingDim {
+		t.Fatalf("dims=%v", vecs)
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("hits=%d", hits.Load())
+	}
+	for _, p := range paths {
+		if !strings.Contains(p, defaultEmbedModel) {
+			t.Fatalf("embedding fallback must not change model, path=%s", p)
+		}
+	}
+}
+
 func TestGeminiEmbedGivesUpOn429AndRedactsKey(t *testing.T) {
 	const secret = "super-secret-key-value"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { streamAsk } from "./ask";
+import { canRetryAssistant, resetAssistantForRetry, retryQuestionOf } from "./chatRetry";
 import { buildColumnMap, defaultColumnPicker, sheetHeaders, type ColumnPickerState } from "./columnPicker";
 import {
   Button,
@@ -60,6 +61,8 @@ export default function Workspace({
   const [streaming, setStreaming] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
+  const messagesRef = useRef<ChatItem[]>([]);
+  messagesRef.current = messages;
 
   useEffect(() => {
     setPicker(defaultColumnPicker(selected?.sheets));
@@ -78,22 +81,13 @@ export default function Workspace({
     logRef.current?.scrollTo(0, logRef.current.scrollHeight);
   }, [messages, streaming]);
 
-  async function onAsk(e: FormEvent) {
-    e.preventDefault();
-    const q = question.trim();
-    if (!q || !selected || selected.status !== "done" || streaming) return;
-    setQuestion("");
-    const userId = `u-${Date.now()}`;
-    const asstId = `a-${Date.now()}`;
-    setMessages((prev) => [
-      ...prev,
-      { id: userId, role: "user", text: q },
-      { id: asstId, role: "assistant", text: "" },
-    ]);
+  async function runAsk(q: string, asstId: string) {
+    if (!selected || selected.status !== "done") return;
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
     setStreaming(true);
+    setMessages((prev) => resetAssistantForRetry(prev, asstId));
     try {
       await streamAsk(
         baseUrl,
@@ -124,6 +118,28 @@ export default function Workspace({
     } finally {
       setStreaming(false);
     }
+  }
+
+  async function onAsk(e: FormEvent) {
+    e.preventDefault();
+    const q = question.trim();
+    if (!q || !selected || selected.status !== "done" || streaming) return;
+    setQuestion("");
+    const userId = `u-${Date.now()}`;
+    const asstId = `a-${Date.now()}`;
+    setMessages((prev) => [
+      ...prev,
+      { id: userId, role: "user", text: q },
+      { id: asstId, role: "assistant", text: "" },
+    ]);
+    await runAsk(q, asstId);
+  }
+
+  function onRetry(asstId: string) {
+    if (streaming) return;
+    const q = retryQuestionOf(messagesRef.current, asstId);
+    if (!q) return;
+    void runAsk(q, asstId);
   }
 
   return (
@@ -217,6 +233,7 @@ export default function Workspace({
                     text={m.text}
                     citations={m.citations}
                     error={m.error}
+                    onRetry={canRetryAssistant(m) ? () => onRetry(m.id) : undefined}
                   />
                 ))
               )}

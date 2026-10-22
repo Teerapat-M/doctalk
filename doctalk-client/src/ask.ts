@@ -70,11 +70,15 @@ function dispatch(ev: AskEvent, handlers: AskHandlers): void {
   else handlers.onError(ev.error);
 }
 
+export const ASK_IDLE_TIMEOUT_MS = 35_000;
+export const ASK_IDLE_ERROR = "ask timed out";
+
 export async function streamAsk(
   baseUrl: string,
   req: AskRequest,
   handlers: AskHandlers,
   signal?: AbortSignal,
+  idleMs: number = ASK_IDLE_TIMEOUT_MS,
 ): Promise<void> {
   const res = await apiFetch(askUrl(baseUrl), {
     method: "POST",
@@ -99,14 +103,74 @@ export async function streamAsk(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   const parser = createSSEParser();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    for (const ev of parser.push(decoder.decode(value, { stream: true }))) {
+  try {
+    for (;;) {
+      const chunk = await readWithIdle(reader, idleMs, signal);
+      if (chunk === null) break;
+      for (const ev of parser.push(decoder.decode(chunk, { stream: true }))) {
+        dispatch(ev, handlers);
+      }
+    }
+    for (const ev of parser.push(decoder.decode())) {
       dispatch(ev, handlers);
     }
+  } catch (err: unknown) {
+    const name = (err as { name?: string }).name;
+    if (name === "AbortError") throw err;
+    const message = err instanceof Error ? err.message : ASK_IDLE_ERROR;
+    handlers.onError(message);
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      /* already closed */
+    }
   }
-  for (const ev of parser.push(decoder.decode())) {
-    dispatch(ev, handlers);
+}
+
+function readWithIdle(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  idleMs: number,
+  signal?: AbortSignal,
+): Promise<Uint8Array | null> {
+  if (idleMs <= 0) {
+    return reader.read().then(({ done, value }) => (done ? null : (value ?? new Uint8Array())));
   }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(ASK_IDLE_ERROR));
+    }, idleMs);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(signal?.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError"));
+    };
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    reader
+      .read()
+      .then(({ done, value }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        resolve(done ? null : (value ?? new Uint8Array()));
+      })
+      .catch((err: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        reject(err);
+      });
+  });
 }

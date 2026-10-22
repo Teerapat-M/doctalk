@@ -19,15 +19,19 @@ type ChatStreamer interface {
 }
 
 type geminiChat struct {
-	apiKey     string
-	model      string
-	fallback   string
-	baseURL    string
-	http       *http.Client
-	maxRetries int
-	budget     time.Duration
-	sleep      func(context.Context, time.Duration) error
-	limiter    *slotLimiter
+	apiKey       string
+	model        string
+	fallback     string
+	baseURL      string
+	http         *http.Client
+	maxRetries   int
+	budget       time.Duration
+	baseDelay    time.Duration
+	maxDelay     time.Duration
+	idleTimeout  time.Duration
+	totalTimeout time.Duration
+	sleep        func(context.Context, time.Duration) error
+	limiter      *slotLimiter
 }
 
 func newGeminiChat(cfg config, lim *slotLimiter) *geminiChat {
@@ -35,21 +39,36 @@ func newGeminiChat(cfg config, lim *slotLimiter) *geminiChat {
 	if base == "" {
 		base = defaultGeminiBaseURL
 	}
-	attempts := defaultGeminiAttempts
+	attempts := cfg.GeminiRetryAttempts
+	if attempts < 1 {
+		attempts = defaultGeminiAttempts
+	}
 	budget := cfg.GeminiRetryBudget
 	if budget <= 0 {
 		budget = defaultGeminiRetryBudget
 	}
+	idleTimeout := cfg.GeminiRequestTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = defaultGeminiRequestTimeout
+	}
+	totalTimeout := cfg.GeminiTotalTimeout
+	if totalTimeout <= 0 {
+		totalTimeout = defaultGeminiTotalTimeout
+	}
 	return &geminiChat{
-		apiKey:     cfg.GeminiAPIKey,
-		model:      cfg.GeminiChatModel,
-		fallback:   cfg.GeminiChatFallbackModel,
-		baseURL:    strings.TrimRight(base, "/"),
-		http:       &http.Client{},
-		maxRetries: attempts,
-		budget:     budget,
-		sleep:      defaultSleep,
-		limiter:    lim,
+		apiKey:       cfg.GeminiAPIKey,
+		model:        cfg.GeminiChatModel,
+		fallback:     cfg.GeminiFallbackModel,
+		baseURL:      strings.TrimRight(base, "/"),
+		http:         &http.Client{Timeout: totalTimeout},
+		maxRetries:   attempts,
+		budget:       budget,
+		baseDelay:    cfg.GeminiRetryBaseDelay,
+		maxDelay:     cfg.GeminiRetryMaxDelay,
+		idleTimeout:  idleTimeout,
+		totalTimeout: totalTimeout,
+		sleep:        defaultSleep,
+		limiter:      lim,
 	}
 }
 
@@ -85,9 +104,9 @@ func (g *geminiChat) StreamAnswer(ctx context.Context, question string, chunks [
 	}
 
 	err = g.streamModel(ctx, g.model, payload, emit, g.maxRetries)
-	if err != nil && g.fallback != "" && g.fallback != g.model && isGeminiUnavailable(err) {
-		log.Printf("ask: primary model %s unavailable (%s); trying GEMINI_CHAT_FALLBACK_MODEL", g.model, redactSecrets(err.Error(), g.apiKey))
-		return g.streamModel(ctx, g.fallback, payload, emit, 1)
+	if err != nil && g.fallback != "" && g.fallback != g.model && isGeminiFallback(err) {
+		log.Printf("ask: primary model %s unavailable (%s); trying GEMINI_FALLBACK_MODEL %s", g.model, redactSecrets(err.Error(), g.apiKey), g.fallback)
+		return rewriteFallbackNotFound(g.fallback, g.streamModel(ctx, g.fallback, payload, emit, g.maxRetries))
 	}
 	return err
 }
@@ -96,6 +115,8 @@ func (g *geminiChat) streamModel(ctx context.Context, model string, payload []by
 	policy := geminiRetry{
 		attempts: attempts,
 		budget:   g.budget,
+		base:     g.baseDelay,
+		maxDelay: g.maxDelay,
 		sleep:    g.sleep,
 		limiter:  g.limiter,
 	}
@@ -133,7 +154,9 @@ type chatGenConfig struct {
 }
 
 func (g *geminiChat) doStream(ctx context.Context, model string, payload []byte, emit func(string) error) (time.Duration, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpointFor(model), bytes.NewReader(payload))
+	watch := startGeminiWatch(ctx, g.idleTimeout, g.totalTimeout)
+	defer watch.stop()
+	req, err := http.NewRequestWithContext(watch.ctx, http.MethodPost, g.endpointFor(model), bytes.NewReader(payload))
 	if err != nil {
 		return -1, g.errf("gemini chat: %v", err)
 	}
@@ -143,28 +166,49 @@ func (g *geminiChat) doStream(ctx context.Context, model string, payload []byte,
 
 	res, err := g.http.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
-			return -1, ctx.Err()
+		if watch.err() != nil {
+			return -1, watch.err()
+		}
+		if isTimeoutErr(err) {
+			return -1, context.DeadlineExceeded
 		}
 		return -1, g.errf("gemini chat: request failed")
 	}
 	defer res.Body.Close()
 
-	if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable {
+	if retryAfter := geminiHTTPRetryAfter(res.StatusCode, res.Header.Get("Retry-After")); retryAfter >= 0 {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-		return parseRetryAfter(res.Header.Get("Retry-After")), g.httpErr(res.StatusCode, body)
+		return retryAfter, g.httpErr(res.StatusCode, body)
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 		return -1, g.httpErr(res.StatusCode, body)
 	}
-	if err := parseGeminiSSE(ctx, res.Body, emit); err != nil {
-		if ctx.Err() != nil {
-			return -1, ctx.Err()
+	body := io.Reader(res.Body)
+	if g.idleTimeout > 0 {
+		body = bumpReader{r: res.Body, bump: watch.bump}
+	}
+	if err := parseGeminiSSE(watch.ctx, body, emit); err != nil {
+		if watch.err() != nil {
+			return -1, watch.err()
+		}
+		if isTimeoutErr(err) {
+			return -1, context.DeadlineExceeded
 		}
 		return -1, err
 	}
 	return -1, nil
+}
+
+func rewriteFallbackNotFound(model string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if !strings.Contains(err.Error(), "HTTP 404") {
+		return err
+	}
+	name := strings.TrimPrefix(model, "models/")
+	return fmt.Errorf("fallback model %s not found; set GEMINI_FALLBACK_MODEL", name)
 }
 
 func (g *geminiChat) errf(format string, args ...any) error {
@@ -276,4 +320,26 @@ func isGeminiUnavailable(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "HTTP 503") || strings.Contains(msg, "UNAVAILABLE")
+}
+
+func isGeminiFallback(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isTimeoutErr(err) {
+		return false
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "UNAVAILABLE") || strings.Contains(msg, "RESOURCE_EXHAUSTED") {
+		return true
+	}
+	if strings.Contains(msg, "HTTP 429") {
+		return true
+	}
+	for code := 500; code <= 599; code++ {
+		if strings.Contains(msg, fmt.Sprintf("HTTP %d", code)) {
+			return true
+		}
+	}
+	return false
 }

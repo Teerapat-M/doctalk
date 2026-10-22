@@ -48,9 +48,15 @@ Non-secrets (already set in `render.yaml` for production):
 | `GEMINI_EMBED_BATCH` | Texts per embedding request. | `16` |
 | `GEMINI_CHAT_MODEL` | Ask model. | `gemini-3.8-flash` |
 | `GEMINI_QUIZ_MODEL` | Quiz model; empty uses the chat model. | (unset) |
-| `GEMINI_CHAT_FALLBACK_MODEL` | Optional one-shot 503 fallback. | (unset) |
+| `GEMINI_FALLBACK_MODEL` | Chat and quiz fallback after retries fail on 429/5xx. Embeddings keep the primary model and 768 dims. | `gemini-flash-lite-latest` |
+| `GEMINI_CHAT_FALLBACK_MODEL` | Alias used only if `GEMINI_FALLBACK_MODEL` is unset. | (unset) |
 | `GEMINI_MAX_IN_FLIGHT` | Concurrent Gemini slots. | `2` |
-| `GEMINI_RETRY_BUDGET_SECONDS` | Gemini retry budget. | `8` |
+| `GEMINI_RETRY_ATTEMPTS` | Max Gemini attempts per model (bounded 1–8). | `3` |
+| `GEMINI_RETRY_BUDGET_SECONDS` | Cap on total retry sleep (bounded to half of `ASK_TIMEOUT_SECONDS`). | `8` |
+| `GEMINI_RETRY_BASE_DELAY_MS` | Exponential backoff start, plus jitter. Honours `Retry-After` when larger. | `500` |
+| `GEMINI_RETRY_MAX_DELAY_MS` | Backoff cap. | `4000` |
+| `GEMINI_REQUEST_TIMEOUT_SECONDS` | Idle / first-token timeout for Gemini streams; resets on each chunk. Values below 5s fail at startup. | `25` |
+| `GEMINI_TOTAL_TIMEOUT_SECONDS` | Hard cap on one Gemini HTTP call (stream, quiz, embed). Must be ≥ idle timeout. | `90` |
 | `QUIZ_N_MAX` | Max quiz questions per request. | `20` |
 | `ASK_TOP_K` | Default retrieval k. | `5` |
 | `ASK_TOP_K_MAX` | Max retrieval k. | `20` |

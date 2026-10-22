@@ -128,4 +128,38 @@ describe("streamAsk", () => {
     );
     expect(errors).toEqual(["gemini chat: HTTP 503: UNAVAILABLE"]);
   });
+
+  it("surfaces an idle timeout as an error event with Retry state", async () => {
+    const errors: string[] = [];
+    const stream = new ReadableStream<Uint8Array>({
+      start() {
+        /* hang without bytes so the client idle timer fires */
+      },
+      cancel() {
+        /* streamAsk cancels the reader after idle */
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: () => "text/event-stream" },
+        body: stream,
+      })),
+    );
+    await streamAsk(
+      "",
+      { question: "q", document_ids: ["d"] },
+      {
+        onDelta: () => undefined,
+        onFinal: () => undefined,
+        onError: (e) => errors.push(e),
+      },
+      undefined,
+      25,
+    );
+    expect(errors).toEqual(["ask timed out"]);
+  });
 });
+

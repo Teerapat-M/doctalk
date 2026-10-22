@@ -127,17 +127,24 @@ export function MessageBubble({
   text,
   citations,
   error,
+  onRetry,
 }: {
   role: "user" | "assistant";
   text: string;
   citations?: Citation[];
   error?: string;
+  onRetry?: () => void;
 }) {
   return (
     <article className={`dt-msg dt-msg-${role}`}>
       {error ? (
         <div className="dt-error-panel" role="alert">
-          {error}
+          <p>{error}</p>
+          {onRetry ? (
+            <Button variant="secondary" onClick={onRetry}>
+              ↻ ลองใหม่ · Retry
+            </Button>
+          ) : null}
         </div>
       ) : (
         <div className="dt-msg-bubble">{text || (role === "assistant" ? "…" : "")}</div>

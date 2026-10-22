@@ -34,8 +34,14 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("GEMINI_QUIZ_MODEL", "")
 	t.Setenv("QUIZ_N_MAX", "")
 	t.Setenv("GEMINI_CHAT_FALLBACK_MODEL", "")
+	t.Setenv("GEMINI_FALLBACK_MODEL", "")
 	t.Setenv("GEMINI_MAX_IN_FLIGHT", "")
 	t.Setenv("GEMINI_RETRY_BUDGET_SECONDS", "")
+	t.Setenv("GEMINI_RETRY_ATTEMPTS", "")
+	t.Setenv("GEMINI_RETRY_BASE_DELAY_MS", "")
+	t.Setenv("GEMINI_RETRY_MAX_DELAY_MS", "")
+	t.Setenv("GEMINI_REQUEST_TIMEOUT_SECONDS", "")
+	t.Setenv("GEMINI_TOTAL_TIMEOUT_SECONDS", "")
 	t.Setenv("TRUSTED_PROXIES", "")
 	t.Setenv("CLIENT_IP_HEADER", "")
 	t.Setenv("JWT_SECRET", testJWTSecret)
@@ -88,8 +94,20 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.QuizNMax != defaultQuizNMax {
 		t.Fatalf("QuizNMax=%d", cfg.QuizNMax)
 	}
-	if cfg.GeminiChatFallbackModel != "" {
-		t.Fatalf("fallback should be unset, got %q", cfg.GeminiChatFallbackModel)
+	if cfg.GeminiFallbackModel != defaultGeminiFallbackModel {
+		t.Fatalf("fallback=%q want %q", cfg.GeminiFallbackModel, defaultGeminiFallbackModel)
+	}
+	if cfg.GeminiRetryAttempts != defaultGeminiAttempts {
+		t.Fatalf("retry attempts=%d", cfg.GeminiRetryAttempts)
+	}
+	if cfg.GeminiRetryBaseDelay != defaultGeminiRetryBase || cfg.GeminiRetryMaxDelay != defaultGeminiRetryMaxDelay {
+		t.Fatalf("retry delays base=%s max=%s", cfg.GeminiRetryBaseDelay, cfg.GeminiRetryMaxDelay)
+	}
+	if cfg.GeminiRequestTimeout != defaultGeminiRequestTimeout {
+		t.Fatalf("request timeout=%s", cfg.GeminiRequestTimeout)
+	}
+	if cfg.GeminiTotalTimeout != defaultGeminiTotalTimeout {
+		t.Fatalf("total timeout=%s", cfg.GeminiTotalTimeout)
 	}
 	if cfg.GeminiMaxInFlight != defaultGeminiMaxInFlight {
 		t.Fatalf("in-flight=%d", cfg.GeminiMaxInFlight)
@@ -312,6 +330,52 @@ func TestLoadConfigGeminiBaseURL(t *testing.T) {
 	}
 	if cfg.GeminiBaseURL != "https://example.invalid/gemini" {
 		t.Fatalf("GeminiBaseURL = %q", cfg.GeminiBaseURL)
+	}
+}
+
+func TestLoadConfigFallbackAliasAndBounds(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	t.Setenv("GEMINI_FALLBACK_MODEL", "")
+	t.Setenv("GEMINI_CHAT_FALLBACK_MODEL", "alias-flash")
+	t.Setenv("GEMINI_RETRY_ATTEMPTS", "99")
+	t.Setenv("GEMINI_RETRY_BASE_DELAY_MS", "10")
+	t.Setenv("GEMINI_RETRY_MAX_DELAY_MS", "100")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GeminiFallbackModel != "alias-flash" {
+		t.Fatalf("fallback alias=%q", cfg.GeminiFallbackModel)
+	}
+	if cfg.GeminiRetryAttempts != maxGeminiAttempts {
+		t.Fatalf("attempts cap=%d", cfg.GeminiRetryAttempts)
+	}
+	if cfg.GeminiRetryBaseDelay != defaultGeminiRetryBase {
+		t.Fatalf("base delay=%s", cfg.GeminiRetryBaseDelay)
+	}
+
+	t.Setenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite")
+	t.Setenv("GEMINI_CHAT_FALLBACK_MODEL", "ignored-alias")
+	cfg, err = loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GeminiFallbackModel != "gemini-2.5-flash-lite" {
+		t.Fatalf("GEMINI_FALLBACK_MODEL should win, got %q", cfg.GeminiFallbackModel)
+	}
+}
+
+func TestLoadConfigRequestTimeoutBelow5FailsFast(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	t.Setenv("GEMINI_REQUEST_TIMEOUT_SECONDS", "1")
+	_, err := loadConfig()
+	if err == nil {
+		t.Fatal("expected error for GEMINI_REQUEST_TIMEOUT_SECONDS=1")
+	}
+	if !strings.Contains(err.Error(), "GEMINI_REQUEST_TIMEOUT_SECONDS") || !strings.Contains(err.Error(), "at least 5") {
+		t.Fatalf("got %v", err)
 	}
 }
 

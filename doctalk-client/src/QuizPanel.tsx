@@ -125,45 +125,49 @@ export default function QuizPanel({
         ))}
       </div>
 
-      <div className="row" style={{ marginTop: "var(--dt-space-4)" }}>
-        {readyDocs.length === 0 ? (
-          <Field label="แหล่งที่มา · Source">
-            <Select value={sourceId} onChange={(e) => setSourceId(e.target.value)}>
-              <option value="">Select a document</option>
-              {docs.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.filename} ({documentCountLabel(d)})
-                </option>
-              ))}
-            </Select>
-          </Field>
-        ) : null}
-        <div className="dt-field">
-          จำนวนคำถาม · Questions
-          <Stepper value={n} onChange={(v) => setN(clampN(v))} />
+      <div className="quiz-setup">
+        <div className="quiz-setup-fields">
+          {readyDocs.length === 0 ? (
+            <Field label="แหล่งที่มา · Source">
+              <Select value={sourceId} onChange={(e) => setSourceId(e.target.value)}>
+                <option value="">Select a document</option>
+                {docs.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.filename} ({documentCountLabel(d)})
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          ) : null}
+          <div className="dt-field">
+            จำนวนคำถาม · Questions
+            <Stepper value={n} onChange={(v) => setN(clampN(v))} />
+          </div>
+          {selected && selected.source_kind !== "pdf" ? (
+            <Field label="Mode">
+              <Select value={mode} onChange={(e) => setMode(e.target.value as QuizMode)}>
+                <option value="generate">Generate with Gemini</option>
+                <option value="from_columns">From question/answer columns</option>
+              </Select>
+            </Field>
+          ) : null}
+          <Toggle
+            label="แสดงเฉลย · Show answers"
+            on={showAllAnswers}
+            onChange={() => {
+              const next = toggleAllAnswers(!showAllAnswers);
+              setShowAllAnswers(next.showAll);
+              setShown(next.shown);
+            }}
+          />
         </div>
-        {selected && selected.source_kind !== "pdf" ? (
-          <Field label="Mode">
-            <Select value={mode} onChange={(e) => setMode(e.target.value as QuizMode)}>
-              <option value="generate">Generate with Gemini</option>
-              <option value="from_columns">From question/answer columns</option>
-            </Select>
-          </Field>
-        ) : null}
-        <Button onClick={() => void onGenerate()} disabled={busy || !sourceId || selected?.status !== "done" || quotaReached}>
-          {questions.length ? "↻ สร้างใหม่" : "สร้างแบบทดสอบ · Generate"}
-        </Button>
-        <Toggle
-          label="แสดงเฉลย · Show answers"
-          on={showAllAnswers}
-          onChange={() => {
-            const next = toggleAllAnswers(!showAllAnswers);
-            setShowAllAnswers(next.showAll);
-            setShown(next.shown);
-          }}
-        />
+        <p className="lede quiz-setup-quota">ใช้โควตา 1 ครั้ง · เหลือ {quotaRemaining}/{quotaLimit} ครั้งวันนี้</p>
+        <div className="quiz-setup-actions">
+          <Button onClick={() => void onGenerate()} disabled={busy || !sourceId || selected?.status !== "done" || quotaReached}>
+            {questions.length ? "↻ สร้างใหม่" : "สร้างแบบทดสอบ · Generate"}
+          </Button>
+        </div>
       </div>
-        <p className="lede">ใช้โควตา 1 ครั้ง · เหลือ {quotaRemaining}/{quotaLimit} ครั้งวันนี้</p>
 
       {quotaReached ? (
         <EmptyState title="ใช้โควตาวันนี้ครบแล้ว">
