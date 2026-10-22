@@ -83,3 +83,5 @@ services:
         value: "20"
       - key: ASK_TIMEOUT_SECONDS
         value: "60"
+      - key: XLSX_FULL_TABLE_MAX_ROWS
+        value: "50"

@@ -95,7 +95,7 @@ func TestMapSheetRowsQuestionAndContent(t *testing.T) {
 	if rows[0].RowNumber != 2 || rows[0].Question == "" || rows[0].Answer != "กรุงเทพมหานคร" {
 		t.Fatalf("row0=%+v", rows[0])
 	}
-	if !strings.Contains(rows[0].Content, "Question:") || !strings.Contains(rows[0].Content, "กรุงเทพมหานคร") {
+	if !strings.Contains(rows[0].Content, "Sheet: คำถาม") || !strings.Contains(rows[0].Content, "กรุงเทพมหานคร") {
 		t.Fatalf("content=%q", rows[0].Content)
 	}
 
@@ -126,21 +126,86 @@ func TestMapSheetRowsQuestionAndContent(t *testing.T) {
 
 func TestMapSheetRowsCapsRows(t *testing.T) {
 	rows := [][]string{{"a"}, {"1"}, {"2"}, {"3"}}
-	if _, err := mapSheetRows(rows, columnMap{Content: "a"}, 1); err == nil || !strings.Contains(err.Error(), "too many rows") {
+	if _, err := mapSheetRows(rows, "s", columnMap{Content: "a"}, 1); err == nil || !strings.Contains(err.Error(), "too many rows") {
 		t.Fatalf("err=%v", err)
 	}
 }
 
 func TestMapSheetRowsRejectsBothOrNeither(t *testing.T) {
 	rows := [][]string{{"a", "b"}, {"1", "2"}}
-	if _, err := mapSheetRows(rows, columnMap{}, 0); err == nil {
+	if _, err := mapSheetRows(rows, "s", columnMap{}, 0); err == nil {
 		t.Fatal("expected error for missing mapping")
 	}
-	if _, err := mapSheetRows(rows, columnMap{Content: "a", Question: "b"}, 0); err == nil {
+	if _, err := mapSheetRows(rows, "s", columnMap{Content: "a", Question: "b"}, 0); err == nil {
 		t.Fatal("expected error for both mappings")
 	}
-	if _, err := mapSheetRows(rows, columnMap{Content: "missing"}, 0); err == nil {
+	if _, err := mapSheetRows(rows, "s", columnMap{Content: "missing"}, 0); err == nil {
 		t.Fatal("expected unknown column")
+	}
+}
+
+func TestFormatRowChunkIncludesSheetAndHeaders(t *testing.T) {
+	got := formatRowChunk("Sales", []string{"Region", "Revenue"}, []string{"South", "250"})
+	if got != "Sheet: Sales; Region: South; Revenue: 250" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestMapSheetRowsSerializesFullRow(t *testing.T) {
+	rows := [][]string{
+		{"Region", "Revenue"},
+		{"North", "100"},
+		{"South", "250"},
+	}
+	got, err := mapSheetRows(rows, "Sales", columnMap{Content: "Region"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("rows=%d", len(got))
+	}
+	if got[1].Content != "Sheet: Sales; Region: South; Revenue: 250" {
+		t.Fatalf("south=%q", got[1].Content)
+	}
+}
+
+func TestGoQuizXLSXMapsChoiceColumns(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "doctalk-go-quiz.xlsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sheets, err := parseXLSX(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sheets) == 0 || sheets[0].Name != "Basics" {
+		t.Fatalf("sheets=%+v", sheets)
+	}
+	want := []string{"id", "topic", "question", "choice_a", "choice_b", "choice_c", "choice_d", "answer", "explanation", "reference"}
+	if strings.Join(sheets[0].Headers, ",") != strings.Join(want, ",") {
+		t.Fatalf("headers=%v", sheets[0].Headers)
+	}
+	rows, err := loadSheetRows(data, kindXLSX, "Basics", columnMap{
+		Question:    "question",
+		Answer:      "answer",
+		Explanation: "explanation",
+		ChoiceA:     "choice_a",
+		ChoiceB:     "choice_b",
+		ChoiceC:     "choice_c",
+		ChoiceD:     "choice_d",
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) < 1 {
+		t.Fatal("no rows")
+	}
+	r := rows[0]
+	if r.Answer != "D" || r.ChoiceD == "" || r.ChoiceA == r.ChoiceD {
+		t.Fatalf("row0=%+v", r)
+	}
+	if !strings.Contains(r.Content, "Sheet: Basics") || !strings.Contains(r.Content, "choice_d:") {
+		t.Fatalf("content=%q", r.Content)
 	}
 }
 

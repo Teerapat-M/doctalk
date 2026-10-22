@@ -453,6 +453,50 @@ func TestGeminiChatIdleStreamTimesOut(t *testing.T) {
 	}
 }
 
+func TestGeminiChatIdleStallTriesFallback(t *testing.T) {
+	var fallback atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "fallback-model") {
+			fallback.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"fb\"}]}}]}\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		if fl != nil {
+			fl.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+		case <-time.After(time.Second):
+		}
+	}))
+	defer srv.Close()
+
+	g := &geminiChat{
+		apiKey:       "k",
+		model:        "primary-model",
+		fallback:     "fallback-model",
+		baseURL:      srv.URL,
+		http:         srv.Client(),
+		maxRetries:   1,
+		idleTimeout:  50 * time.Millisecond,
+		totalTimeout: time.Second,
+		sleep:        func(context.Context, time.Duration) error { return nil },
+	}
+	var got strings.Builder
+	if err := g.StreamAnswer(context.Background(), "q", nil, func(s string) error {
+		got.WriteString(s)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != "fb" || fallback.Load() != 1 {
+		t.Fatalf("got %q fallback=%d", got.String(), fallback.Load())
+	}
+}
+
 func TestGeminiChatFallback404ClearError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "primary-model") {

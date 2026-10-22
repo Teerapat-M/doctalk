@@ -262,6 +262,12 @@ h2 {
   gap: var(--dt-space-2);
 }
 
+.quota-chip {
+  font-size: var(--dt-font-size-caption);
+  color: var(--dt-color-text-muted);
+  white-space: nowrap;
+}
+
 .menu-btn {
   display: none;
 }

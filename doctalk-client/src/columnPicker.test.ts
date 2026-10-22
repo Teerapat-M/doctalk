@@ -48,6 +48,14 @@ describe("defaultRole", () => {
     expect(defaultRole("คำอธิบาย")).toBe("explanation");
     expect(defaultRole("#")).toBe("ignore");
   });
+
+  it("auto-detects choice_*, option_*, and A-D headers", () => {
+    expect(defaultRole("choice_a")).toBe("choice_a");
+    expect(defaultRole("option_b")).toBe("choice_b");
+    expect(defaultRole("C")).toBe("choice_c");
+    expect(defaultRole("choice-d")).toBe("choice_d");
+    expect(defaultRole("answer")).toBe("answer");
+  });
 });
 
 describe("excelColLetter", () => {
@@ -100,5 +108,24 @@ describe("buildColumnMap", () => {
   it("maps a content header without an answer column to columns.content", () => {
     const state = selectSheet(sheets, "Notes");
     expect(buildColumnMap(state, ["content", "extra"])).toEqual({ content: "content" });
+  });
+
+  it("maps auto-detected choice columns onto the ingest API", () => {
+    const quizSheets: SheetInfo[] = [
+      {
+        name: "Basics",
+        headers: ["question", "choice_a", "choice_b", "choice_c", "choice_d", "answer"],
+        row_count: 1,
+      },
+    ];
+    const state = defaultColumnPicker(quizSheets);
+    expect(buildColumnMap(state, quizSheets[0].headers)).toEqual({
+      question: "question",
+      choice_a: "choice_a",
+      choice_b: "choice_b",
+      choice_c: "choice_c",
+      choice_d: "choice_d",
+      answer: "answer",
+    });
   });
 });

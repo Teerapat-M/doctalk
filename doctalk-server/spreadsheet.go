@@ -36,6 +36,10 @@ type columnMap struct {
 	Question    string `json:"question,omitempty"`
 	Answer      string `json:"answer,omitempty"`
 	Explanation string `json:"explanation,omitempty"`
+	ChoiceA     string `json:"choice_a,omitempty"`
+	ChoiceB     string `json:"choice_b,omitempty"`
+	ChoiceC     string `json:"choice_c,omitempty"`
+	ChoiceD     string `json:"choice_d,omitempty"`
 }
 
 type sheetRow struct {
@@ -44,6 +48,10 @@ type sheetRow struct {
 	Question    string
 	Answer      string
 	Explanation string
+	ChoiceA     string
+	ChoiceB     string
+	ChoiceC     string
+	ChoiceD     string
 }
 
 func detectKind(data []byte, filename string) string {
@@ -106,7 +114,10 @@ func validateIngestMapping(sheets []sheetInfo, sheet string, columns columnMap) 
 		return fmt.Errorf("unknown sheet %q", sheet)
 	}
 	idx := headerIndex(found.Headers)
-	for _, name := range []string{columns.Content, columns.Question, columns.Answer, columns.Explanation} {
+	for _, name := range []string{
+		columns.Content, columns.Question, columns.Answer, columns.Explanation,
+		columns.ChoiceA, columns.ChoiceB, columns.ChoiceC, columns.ChoiceD,
+	} {
 		if name == "" {
 			continue
 		}
@@ -237,10 +248,10 @@ func loadSheetRows(data []byte, kind, sheet string, mapping columnMap, maxRows i
 	default:
 		return nil, fmt.Errorf("unsupported spreadsheet")
 	}
-	return mapSheetRows(rows, mapping, maxRows)
+	return mapSheetRows(rows, sheet, mapping, maxRows)
 }
 
-func mapSheetRows(rows [][]string, mapping columnMap, maxRows int) ([]sheetRow, error) {
+func mapSheetRows(rows [][]string, sheet string, mapping columnMap, maxRows int) ([]sheetRow, error) {
 	if maxRows < 1 {
 		maxRows = maxSpreadsheetRows
 	}
@@ -254,8 +265,7 @@ func mapSheetRows(rows [][]string, mapping columnMap, maxRows int) ([]sheetRow, 
 	if useQuestion == useContent {
 		return nil, fmt.Errorf("map exactly one of columns.content or columns.question")
 	}
-	contentIdx, err := requiredCol(idx, mapping.Content, mapping.Question)
-	if err != nil {
+	if _, err := requiredCol(idx, mapping.Content, mapping.Question); err != nil {
 		return nil, err
 	}
 	qIdx, err := mappedCol(idx, mapping.Question)
@@ -267,6 +277,22 @@ func mapSheetRows(rows [][]string, mapping columnMap, maxRows int) ([]sheetRow, 
 		return nil, err
 	}
 	eIdx, err := mappedCol(idx, mapping.Explanation)
+	if err != nil {
+		return nil, err
+	}
+	caIdx, err := mappedCol(idx, mapping.ChoiceA)
+	if err != nil {
+		return nil, err
+	}
+	cbIdx, err := mappedCol(idx, mapping.ChoiceB)
+	if err != nil {
+		return nil, err
+	}
+	ccIdx, err := mappedCol(idx, mapping.ChoiceC)
+	if err != nil {
+		return nil, err
+	}
+	cdIdx, err := mappedCol(idx, mapping.ChoiceD)
 	if err != nil {
 		return nil, err
 	}
@@ -285,11 +311,15 @@ func mapSheetRows(rows [][]string, mapping columnMap, maxRows int) ([]sheetRow, 
 		sr := sheetRow{RowNumber: i + 1}
 		sr.Answer = cell(aIdx)
 		sr.Explanation = cell(eIdx)
+		sr.ChoiceA = cell(caIdx)
+		sr.ChoiceB = cell(cbIdx)
+		sr.ChoiceC = cell(ccIdx)
+		sr.ChoiceD = cell(cdIdx)
 		if useContent {
-			sr.Content = cell(contentIdx)
+			sr.Content = formatRowChunk(sheet, headers, rows[i])
 		} else {
 			sr.Question = cell(qIdx)
-			sr.Content = formatQAChunk(sr.Question, sr.Answer, sr.Explanation)
+			sr.Content = formatRowChunk(sheet, headers, rows[i])
 		}
 		if strings.TrimSpace(sr.Content) == "" {
 			continue
@@ -367,26 +397,29 @@ func rowHasText(row []string) bool {
 }
 
 func formatQAChunk(q, a, e string) string {
-	var b strings.Builder
-	if q != "" {
-		b.WriteString("Question: ")
-		b.WriteString(q)
+	return formatRowChunk("", []string{"Question", "Answer", "Explanation"}, []string{q, a, e})
+}
+
+func formatRowChunk(sheet string, headers, row []string) string {
+	parts := make([]string, 0, len(headers)+1)
+	if name := strings.TrimSpace(sheet); name != "" {
+		parts = append(parts, "Sheet: "+name)
 	}
-	if a != "" {
-		if b.Len() > 0 {
-			b.WriteByte('\n')
+	for i, h := range headers {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
 		}
-		b.WriteString("Answer: ")
-		b.WriteString(a)
-	}
-	if e != "" {
-		if b.Len() > 0 {
-			b.WriteByte('\n')
+		val := ""
+		if i < len(row) {
+			val = strings.TrimSpace(row[i])
 		}
-		b.WriteString("Explanation: ")
-		b.WriteString(e)
+		if val == "" {
+			continue
+		}
+		parts = append(parts, h+": "+val)
 	}
-	return b.String()
+	return strings.Join(parts, "; ")
 }
 
 func sheetsJSON(sheets []sheetInfo) []byte {

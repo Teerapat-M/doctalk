@@ -182,11 +182,13 @@ export function Header({
   theme,
   onToggleTheme,
   onMenu,
+  quotaLabel,
 }: {
   active: "docs" | "quiz";
   theme: "light" | "dark";
   onToggleTheme: () => void;
   onMenu?: () => void;
+  quotaLabel?: string;
 }) {
   return (
     <header className="dt-header">
@@ -210,6 +212,7 @@ export function Header({
         </a>
       </nav>
       <div className="header-actions">
+        {quotaLabel ? <span className="quota-chip">{quotaLabel}</span> : null}
         <Toggle
           label={theme === "dark" ? "Dark" : "Light"}
           on={theme === "dark"}
@@ -343,6 +346,10 @@ const roleLabels: Record<ColumnRole, string> = {
   question: "เนื้อหา/คำถาม · Question",
   answer: "คำตอบ · Answer (opt.)",
   explanation: "คำอธิบาย · Explain (opt.)",
+  choice_a: "ตัวเลือก A · Choice A",
+  choice_b: "ตัวเลือก B · Choice B",
+  choice_c: "ตัวเลือก C · Choice C",
+  choice_d: "ตัวเลือก D · Choice D",
   ignore: "ไม่ใช้ · Ignore",
 };
 

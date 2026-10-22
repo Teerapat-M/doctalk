@@ -15,6 +15,7 @@ import {
 import { documentCountLabel, type ColumnMap, type DocumentRecord } from "./documents";
 import QuizPanel from "./QuizPanel";
 import type { Citation } from "./quiz";
+import type { QuotaResponse } from "./quizQuota";
 import { hashFor } from "./route";
 
 type ChatItem = {
@@ -38,6 +39,8 @@ type Props = {
   onUpload: (file: File) => void;
   onIngest: (id: string, sheet: string, columns: ColumnMap) => void;
   onMissing: () => void;
+  quota?: QuotaResponse | null;
+  refreshQuota?: () => void;
 };
 
 export default function Workspace({
@@ -53,6 +56,8 @@ export default function Workspace({
   onUpload,
   onIngest,
   onMissing,
+  quota = null,
+  refreshQuota,
 }: Props) {
   const selected = useMemo(() => docs.find((d) => d.id === selectedId), [docs, selectedId]);
   const [picker, setPicker] = useState<ColumnPickerState>(defaultColumnPicker(selected?.sheets));
@@ -117,6 +122,7 @@ export default function Workspace({
       );
     } finally {
       setStreaming(false);
+      refreshQuota?.();
     }
   }
 
@@ -192,7 +198,13 @@ export default function Workspace({
         {error ? <ErrorPanel>{error}</ErrorPanel> : null}
 
         {tab === "quiz" ? (
-          <QuizPanel baseUrl={baseUrl} docs={docs} sourceId={selectedId ?? ""} />
+          <QuizPanel
+            baseUrl={baseUrl}
+            docs={docs}
+            sourceId={selectedId ?? ""}
+            quota={quota}
+            refreshQuota={refreshQuota}
+          />
         ) : selected?.status === "mapping" ? (
           <div className="quiz-panel">
             <ColumnPicker

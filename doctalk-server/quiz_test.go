@@ -102,6 +102,33 @@ func TestBuildQuizFromColumns(t *testing.T) {
 	}
 }
 
+func TestBuildQuizFromMappedChoiceColumns(t *testing.T) {
+	chunks := []retrievedChunk{{
+		ID: "1", DocumentID: "d", SheetName: "Basics", RowNumber: 2,
+		Question:    "ข้อใดถูกต้องเกี่ยวกับ `:=`?",
+		Answer:      "D",
+		ChoiceA:     "ใช้ได้ทั้งในระดับ package และในฟังก์ชัน",
+		ChoiceB:     "ใช้ได้เฉพาะกับค่าคงที่",
+		ChoiceC:     "ต้องระบุชนิดข้อมูลทุกครั้ง",
+		ChoiceD:     "ใช้ได้เฉพาะภายในฟังก์ชันเท่านั้น",
+		Explanation: "short variable declaration",
+	}}
+	got, err := buildQuizFromColumns(chunks, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("n=%d", len(got))
+	}
+	q := got[0]
+	if q.Correct != "D" {
+		t.Fatalf("correct=%s", q.Correct)
+	}
+	if q.Options.D != "ใช้ได้เฉพาะภายในฟังก์ชันเท่านั้น" || q.Options.A == "A" {
+		t.Fatalf("options=%+v", q.Options)
+	}
+}
+
 func postJSON(r http.Handler, path, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

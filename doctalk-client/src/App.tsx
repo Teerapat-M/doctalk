@@ -10,6 +10,7 @@ import {
 } from "./documents";
 import ErrorScreen from "./ErrorScreen";
 import Landing from "./Landing";
+import { fetchQuota, formatQuotaLabel, type QuotaResponse } from "./quizQuota";
 import { applyTheme, preferredTheme, toggleTheme, type ThemeMode } from "./theme";
 import { hashFor, parseHash, type Route } from "./route";
 import Workspace from "./Workspace";
@@ -28,6 +29,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [quota, setQuota] = useState<QuotaResponse | null>(null);
 
   useEffect(() => {
     applyTheme(theme);
@@ -50,15 +52,24 @@ export default function App() {
     return list;
   }, []);
 
+  const refreshQuota = useCallback(async () => {
+    try {
+      setQuota(await fetchQuota(apiBase));
+    } catch {
+      /* keep last snapshot */
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     refresh().catch((err: unknown) => {
       if (!cancelled) setError(err instanceof Error ? err.message : "could not list documents");
     });
+    void refreshQuota();
     return () => {
       cancelled = true;
     };
-  }, [refresh]);
+  }, [refresh, refreshQuota]);
 
   const mappingDoc = docs.find((d) => d.status === "mapping") ?? null;
   const selectedId = route.name === "workspace" ? route.id : undefined;
@@ -136,6 +147,7 @@ export default function App() {
       <Header
         active={navActive}
         theme={theme}
+        quotaLabel={formatQuotaLabel(quota)}
         onToggleTheme={() => setTheme((t) => {
           const next = toggleTheme(t);
           applyTheme(next);
@@ -162,6 +174,8 @@ export default function App() {
             onUpload={(f) => void onUpload(f)}
             onIngest={(id, sheet, columns) => void onIngest(id, sheet, columns)}
             onMissing={onMissing}
+            quota={quota}
+            refreshQuota={() => void refreshQuota()}
           />
         ) : (
           <Landing

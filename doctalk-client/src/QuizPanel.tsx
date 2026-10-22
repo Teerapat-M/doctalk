@@ -30,12 +30,16 @@ type Props = {
   baseUrl?: string;
   docs?: DocumentRecord[];
   sourceId?: string;
+  quota?: QuotaResponse | null;
+  refreshQuota?: () => void;
 };
 
 export default function QuizPanel({
   baseUrl = import.meta.env.VITE_API_URL ?? "",
   docs = [],
   sourceId: sourceIdProp,
+  quota: quotaProp,
+  refreshQuota: refreshQuotaProp,
 }: Props) {
   const [sourceId, setSourceId] = useState(sourceIdProp ?? "");
   useEffect(() => {
@@ -49,7 +53,8 @@ export default function QuizPanel({
   const [picks, setPicks] = useState<PicksMap>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [quota, setQuota] = useState<QuotaResponse | null>(null);
+  const [localQuota, setLocalQuota] = useState<QuotaResponse | null>(null);
+  const quota = quotaProp ?? localQuota;
 
   const selected = useMemo(() => docs.find((d) => d.id === sourceId), [docs, sourceId]);
   const readyDocs = docs.filter((d) => d.status === "done");
@@ -59,20 +64,25 @@ export default function QuizPanel({
   const quotaRemaining = quizQuota?.remaining ?? quotaLimit;
 
   useEffect(() => {
+    if (quotaProp !== undefined) return;
     let cancelled = false;
     fetchQuota(baseUrl)
       .then((q) => {
-        if (!cancelled) setQuota(q);
+        if (!cancelled) setLocalQuota(q);
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [baseUrl]);
+  }, [baseUrl, quotaProp]);
 
   async function refreshQuota() {
+    if (refreshQuotaProp) {
+      refreshQuotaProp();
+      return;
+    }
     try {
-      setQuota(await fetchQuota(baseUrl));
+      setLocalQuota(await fetchQuota(baseUrl));
     } catch {
       /* keep last snapshot */
     }

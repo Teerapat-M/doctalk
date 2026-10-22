@@ -60,11 +60,12 @@ Non-secrets (already set in `render.yaml` for production):
 | `QUIZ_N_MAX` | Max quiz questions per request. | `20` |
 | `ASK_TOP_K` | Default retrieval k. | `5` |
 | `ASK_TOP_K_MAX` | Max retrieval k. | `20` |
-| `ASK_TIMEOUT_SECONDS` | Ask request timeout. | `60` |
+| `ASK_TIMEOUT_SECONDS` | Ask request timeout. Non-integer or values below 5s fail at startup. | `60` |
+| `XLSX_FULL_TABLE_MAX_ROWS` | If an xlsx/csv has this many rows or fewer, `/ask` includes the whole table instead of top-k. `0` disables. | `50` |
 
 Render also injects `PORT`. The process binds `0.0.0.0:$PORT`. Do not set `API_PORT` in production (that override is for local compose).
 
-The server **refuses to start** if `DATABASE_URL` or `JWT_SECRET` is missing, `JWT_SECRET` is shorter than 32 bytes, `COOKIE_SAMESITE` or `COOKIE_SECURE` is invalid, `COOKIE_SAMESITE=None` without `COOKIE_SECURE=true`, `CORS_ORIGIN` contains `*` or `http://` while SameSite is None+Secure, `QUIZ_RESET_HOUR` is out of 0–23, `TRUSTED_PROXIES` is malformed or `0.0.0.0/0`, production cookies lack Supabase, or only one of `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` is set. Locally, missing Supabase logs a warning that disk storage is ephemeral on Render.
+The server **refuses to start** if `DATABASE_URL` or `JWT_SECRET` is missing, `JWT_SECRET` is shorter than 32 bytes, `COOKIE_SAMESITE` or `COOKIE_SECURE` is invalid, `COOKIE_SAMESITE=None` without `COOKIE_SECURE=true`, `CORS_ORIGIN` contains `*` or `http://` while SameSite is None+Secure, `QUIZ_RESET_HOUR` is out of 0–23, `TRUSTED_PROXIES` is malformed or `0.0.0.0/0`, production cookies lack Supabase, only one of `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` is set, or `ASK_TIMEOUT_SECONDS` is not an integer of at least 5. Locally, missing Supabase logs a warning that disk storage is ephemeral on Render.
 
 ### Vercel (`doctalk-client`)
 

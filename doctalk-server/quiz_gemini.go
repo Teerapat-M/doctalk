@@ -140,7 +140,7 @@ func (g *geminiQuiz) GenerateTypedJSON(ctx context.Context, system, user string,
 	}
 
 	out, err := g.generateModel(ctx, g.model, payload, g.maxRetries)
-	if err != nil && g.fallback != "" && g.fallback != g.model && isGeminiFallback(err) {
+	if err != nil && g.fallback != "" && g.fallback != g.model && isGeminiFallback(err) && ctx.Err() == nil {
 		log.Printf("quiz: primary model %s unavailable (%s); trying GEMINI_FALLBACK_MODEL %s", g.model, redactSecrets(err.Error(), g.apiKey), g.fallback)
 		out, err = g.generateModel(ctx, g.fallback, payload, g.maxRetries)
 		return out, rewriteFallbackNotFound(g.fallback, err)

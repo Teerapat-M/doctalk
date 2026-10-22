@@ -51,6 +51,7 @@ const (
 	defaultGuestTTL             = 7 * 24 * time.Hour
 	defaultMaxPages             = 50
 	defaultMaxRows              = 2000
+	defaultXLSXFullTableMaxRows = 50
 	defaultSupabaseBucket       = "doctalk-uploads"
 	minJWTSecretBytes           = 32
 )
@@ -77,6 +78,7 @@ type config struct {
 	AskTopK              int
 	AskTopKMax           int
 	AskTimeout           time.Duration
+	XLSXFullTableMaxRows int
 	MaxUploadBytes       int64
 	MaxPages             int
 	MaxRows              int
@@ -117,7 +119,7 @@ func loadConfig() (config, error) {
 		QuizNMax:             getenvInt("QUIZ_N_MAX", defaultQuizNMax),
 		AskTopK:              getenvInt("ASK_TOP_K", defaultAskTopK),
 		AskTopKMax:           getenvInt("ASK_TOP_K_MAX", defaultAskTopKMax),
-		AskTimeout:           time.Duration(getenvInt("ASK_TIMEOUT_SECONDS", defaultAskTimeoutSec)) * time.Second,
+		XLSXFullTableMaxRows: getenvInt("XLSX_FULL_TABLE_MAX_ROWS", defaultXLSXFullTableMaxRows),
 		MaxUploadBytes:       getenvInt64("MAX_UPLOAD_BYTES", defaultMaxUpload),
 		MaxPages:             getenvInt("MAX_PAGES", defaultMaxPages),
 		MaxRows:              getenvInt("MAX_ROWS", defaultMaxRows),
@@ -210,8 +212,13 @@ func loadConfig() (config, error) {
 	if cfg.AskTopK > cfg.AskTopKMax {
 		cfg.AskTopK = cfg.AskTopKMax
 	}
-	if cfg.AskTimeout < time.Second {
-		cfg.AskTimeout = time.Duration(defaultAskTimeoutSec) * time.Second
+	askTimeout, err := parseTimeoutSeconds("ASK_TIMEOUT_SECONDS", time.Duration(defaultAskTimeoutSec)*time.Second)
+	if err != nil {
+		return config{}, err
+	}
+	cfg.AskTimeout = askTimeout
+	if cfg.XLSXFullTableMaxRows < 0 {
+		cfg.XLSXFullTableMaxRows = defaultXLSXFullTableMaxRows
 	}
 	if cfg.GeminiMaxInFlight < 1 {
 		cfg.GeminiMaxInFlight = defaultGeminiMaxInFlight

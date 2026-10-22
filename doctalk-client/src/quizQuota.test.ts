@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchQuota, quizQuotaReached, quotaUrl } from "./quizQuota";
+import { fetchQuota, formatQuotaLabel, quizQuotaReached, quotaUrl } from "./quizQuota";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -43,5 +43,18 @@ describe("fetchQuota", () => {
         ingest: { used: 0, remaining: 10, limit: 10 },
       }),
     ).toBe(false);
+  });
+});
+
+describe("formatQuotaLabel", () => {
+  it("shows remaining ask and quiz quota", () => {
+    expect(formatQuotaLabel(null)).toBe("");
+    expect(
+      formatQuotaLabel({
+        quiz: { used: 1, remaining: 4, limit: 5 },
+        ask: { used: 2, remaining: 18, limit: 20 },
+        ingest: { used: 0, remaining: 10, limit: 10 },
+      }),
+    ).toBe("Ask 18/20 · Quiz 4/5");
   });
 });

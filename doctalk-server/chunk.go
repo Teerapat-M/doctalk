@@ -30,6 +30,10 @@ type Chunk struct {
 	Question    string
 	Answer      string
 	Explanation string
+	ChoiceA     string
+	ChoiceB     string
+	ChoiceC     string
+	ChoiceD     string
 }
 
 func chunkPages(pages []pageText) []Chunk {
