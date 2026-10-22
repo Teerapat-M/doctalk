@@ -385,6 +385,20 @@ func TestLoadConfigAskTimeoutInvalidFailsFast(t *testing.T) {
 	}
 }
 
+func TestLoadConfigTotalTimeoutExceedsAskFailsFast(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	t.Setenv("GEMINI_TOTAL_TIMEOUT_SECONDS", "90")
+	t.Setenv("ASK_TIMEOUT_SECONDS", "60")
+	_, err := loadConfig()
+	if err == nil {
+		t.Fatal("expected error when GEMINI_TOTAL_TIMEOUT_SECONDS > ASK_TIMEOUT_SECONDS")
+	}
+	if !strings.Contains(err.Error(), "GEMINI_TOTAL_TIMEOUT_SECONDS") || !strings.Contains(err.Error(), "ASK_TIMEOUT_SECONDS") {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestLoadConfigRequestTimeoutBelow5FailsFast(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
 	t.Setenv("JWT_SECRET", testJWTSecret)
