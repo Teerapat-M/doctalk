@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -17,7 +17,7 @@ import (
 type askRequest struct {
 	Question    string   `json:"question"`
 	DocumentIDs []string `json:"document_ids"`
-	K           int      `json:"k"`
+	K           *int     `json:"k"`
 }
 
 type deltaEvent struct {
@@ -48,9 +48,7 @@ type retrievedChunk struct {
 
 func (s *server) ask(c *gin.Context) {
 	var req askRequest
-	dec := json.NewDecoder(io.LimitReader(c.Request.Body, 1<<20))
-	if err := dec.Decode(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
+	if !requireJSONBody(c, &req) {
 		return
 	}
 	question := strings.TrimSpace(req.Question)
@@ -71,6 +69,15 @@ func (s *server) ask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "too many document_ids"})
 		return
 	}
+	if invalidDocumentIDs(docIDs) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid document_id"})
+		return
+	}
+	k, kerr := parseOptionalK(req.K, s.cfg.AskTopK, s.cfg.AskTopKMax)
+	if kerr != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": kerr})
+		return
+	}
 	if s.embed == nil || s.chat == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "GEMINI_API_KEY is not configured"})
 		return
@@ -80,7 +87,6 @@ func (s *server) ask(c *gin.Context) {
 		return
 	}
 
-	k := clampK(req.K, s.cfg.AskTopK, s.cfg.AskTopKMax)
 	timeout := s.cfg.AskTimeout
 	if timeout <= 0 {
 		timeout = time.Duration(defaultAskTimeoutSec) * time.Second
@@ -89,6 +95,10 @@ func (s *server) ask(c *gin.Context) {
 	defer cancel()
 
 	if err := s.ensureAskDocs(ctx, docIDs); err != nil {
+		if errors.Is(err, errAskDocsBadID) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid document_id"})
+			return
+		}
 		if errors.Is(err, errAskDocsNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "document not found"})
 			return
@@ -108,25 +118,23 @@ func (s *server) ask(c *gin.Context) {
 		return
 	}
 
+	s.startSSE(c)
+
 	qvec, err := s.embed.EmbedQuery(ctx, question)
 	if err != nil {
-		s.writeAskErr(c, false, err)
+		s.writeAskErr(c, true, err)
 		return
 	}
 	if len(qvec) != EmbeddingDim {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "gemini embedding: unexpected dimension"})
+		s.writeAskErr(c, true, errors.New("gemini embedding: unexpected dimension"))
 		return
 	}
 
 	chunks, err := s.retrieve(ctx, docIDs, qvec, k)
 	if err != nil {
-		s.writeAskErr(c, false, err)
+		s.writeAskErr(c, true, err)
 		return
 	}
-
-	citations := citationsFromChunks(chunks)
-	s.startSSE(c)
-	started := true
 
 	emit := func(delta string) error {
 		if err := ctx.Err(); err != nil {
@@ -135,13 +143,29 @@ func (s *server) ask(c *gin.Context) {
 		return writeSSE(c.Writer, "delta", deltaEvent{Text: delta})
 	}
 
+	notFound := false
 	if len(chunks) == 0 {
+		notFound = true
 		if err := emit(notFoundReply(question)); err != nil {
 			return
 		}
-	} else if err := s.chat.StreamAnswer(ctx, question, chunks, emit); err != nil {
-		s.writeAskErr(c, started, err)
-		return
+	} else {
+		var gate answerGate
+		if err := s.chat.StreamAnswer(ctx, question, chunks, func(delta string) error {
+			return gate.push(delta, emit)
+		}); err != nil {
+			s.writeAskErr(c, true, err)
+			return
+		}
+		if err := gate.flush(emit); err != nil {
+			s.writeAskErr(c, true, err)
+			return
+		}
+		notFound = gate.notFound
+	}
+	citations := citationsFromChunks(chunks)
+	if notFound {
+		citations = []citationJSON{}
 	}
 	_ = writeSSE(c.Writer, "final", finalEvent{Citations: citations})
 }
@@ -165,16 +189,13 @@ func (s *server) writeAskErr(c *gin.Context, started bool, err error) {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		msg = "ask timed out"
-		if !started {
-			c.JSON(http.StatusGatewayTimeout, gin.H{"error": msg})
-			return
-		}
-		_ = writeSSE(c.Writer, "error", sseErrorEvent{Error: msg})
-		return
 	}
+	log.Printf("ask: %s", msg)
 	if !started {
 		status := http.StatusBadGateway
-		if !strings.Contains(msg, "gemini") {
+		if errors.Is(err, context.DeadlineExceeded) {
+			status = http.StatusGatewayTimeout
+		} else if !strings.Contains(msg, "gemini") {
 			status = http.StatusInternalServerError
 		}
 		c.JSON(status, gin.H{"error": msg})
@@ -200,6 +221,7 @@ func writeSSE(w http.ResponseWriter, event string, v any) error {
 var (
 	errAskDocsNotFound = errors.New("ask docs not found")
 	errAskDocsNotReady = errors.New("ask docs not ready")
+	errAskDocsBadID    = errors.New("ask docs bad id")
 )
 
 func (s *server) ensureAskDocs(ctx context.Context, ids []string) error {
@@ -210,7 +232,7 @@ func (s *server) ensureAskDocs(ctx context.Context, ids []string) error {
 	rows, err := s.db.QueryContext(ctx, q, "{"+strings.Join(ids, ",")+"}")
 	if err != nil {
 		if isBadUUID(err) {
-			return errAskDocsNotFound
+			return errAskDocsBadID
 		}
 		return err
 	}
@@ -292,23 +314,6 @@ func citationSnippet(s string, maxRunes int) string {
 		return s
 	}
 	return string(runes[:maxRunes]) + "…"
-}
-
-func clampK(reqK, def, max int) int {
-	if max < 1 {
-		max = defaultAskTopKMax
-	}
-	k := def
-	if reqK > 0 {
-		k = reqK
-	}
-	if k < 1 {
-		k = 1
-	}
-	if k > max {
-		k = max
-	}
-	return k
 }
 
 func uniqueNonEmpty(ids []string) []string {

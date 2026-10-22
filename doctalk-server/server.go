@@ -21,6 +21,7 @@ type server struct {
 
 func newRouter(s *server) *gin.Engine {
 	r := gin.New()
+	_ = r.SetTrustedProxies(s.cfg.TrustedProxies)
 	r.Use(gin.Logger(), gin.Recovery(), cors(s.cfg.CORSOrigin))
 	r.MaxMultipartMemory = 8 << 20
 	r.GET("/health", healthHandler(s.ping))

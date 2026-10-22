@@ -15,52 +15,63 @@ import (
 const EmbeddingDim = 768
 
 const (
-	defaultAPIPort       = "8081"
-	defaultMaxUpload     = 10 << 20 // 10 MiB
-	defaultStorageDir    = "data/uploads"
-	defaultEmbedBatch    = 16
-	defaultEmbedModel    = "gemini-embedding-001"
-	defaultChatModel     = "gemini-3.8-flash"
-	defaultGeminiBaseURL = "https://generativelanguage.googleapis.com"
-	defaultAskTopK       = 5
-	defaultAskTopKMax    = 20
-	defaultAskTimeoutSec = 60
-	maxQuestionRunes     = 4000
-	maxAskDocumentIDs    = 32
-	citationSnippetRunes = 240
+	defaultAPIPort           = "8181"
+	defaultMaxUpload         = 10 << 20 // 10 MiB
+	defaultStorageDir        = "data/uploads"
+	defaultEmbedBatch        = 16
+	defaultEmbedModel        = "gemini-embedding-001"
+	defaultChatModel         = "gemini-3.8-flash"
+	defaultGeminiBaseURL     = "https://generativelanguage.googleapis.com"
+	defaultAskTopK           = 5
+	defaultAskTopKMax        = 20
+	defaultAskTimeoutSec     = 60
+	defaultGeminiAttempts    = 3
+	defaultGeminiRetryBudget = 8 * time.Second
+	defaultGeminiMaxInFlight = 2
+	maxQuestionRunes         = 4000
+	maxAskDocumentIDs        = 32
+	citationSnippetRunes     = 240
 )
 
 type config struct {
-	Port                 string
-	DatabaseURL          string
-	CORSOrigin           string
-	GeminiAPIKey         string
-	GeminiBaseURL        string
-	GeminiEmbeddingModel string
-	GeminiChatModel      string
-	GeminiEmbedBatch     int
-	AskTopK              int
-	AskTopKMax           int
-	AskTimeout           time.Duration
-	MaxUploadBytes       int64
-	StorageDir           string
+	Port                    string
+	DatabaseURL             string
+	CORSOrigin              string
+	GeminiAPIKey            string
+	GeminiBaseURL           string
+	GeminiEmbeddingModel    string
+	GeminiChatModel         string
+	GeminiChatFallbackModel string
+	GeminiEmbedBatch        int
+	GeminiMaxInFlight       int
+	GeminiRetryBudget       time.Duration
+	AskTopK                 int
+	AskTopKMax              int
+	AskTimeout              time.Duration
+	MaxUploadBytes          int64
+	StorageDir              string
+	TrustedProxies          []string
 }
 
 func loadConfig() (config, error) {
 	cfg := config{
-		Port:                 listenPort(),
-		DatabaseURL:          os.Getenv("DATABASE_URL"),
-		CORSOrigin:           getenv("CORS_ORIGIN", "*"),
-		GeminiAPIKey:         os.Getenv("GEMINI_API_KEY"),
-		GeminiBaseURL:        strings.TrimRight(getenv("GEMINI_BASE_URL", defaultGeminiBaseURL), "/"),
-		GeminiEmbeddingModel: getenv("GEMINI_EMBEDDING_MODEL", defaultEmbedModel),
-		GeminiChatModel:      getenv("GEMINI_CHAT_MODEL", defaultChatModel),
-		GeminiEmbedBatch:     getenvInt("GEMINI_EMBED_BATCH", defaultEmbedBatch),
-		AskTopK:              getenvInt("ASK_TOP_K", defaultAskTopK),
-		AskTopKMax:           getenvInt("ASK_TOP_K_MAX", defaultAskTopKMax),
-		AskTimeout:           time.Duration(getenvInt("ASK_TIMEOUT_SECONDS", defaultAskTimeoutSec)) * time.Second,
-		MaxUploadBytes:       getenvInt64("MAX_UPLOAD_BYTES", defaultMaxUpload),
-		StorageDir:           getenv("STORAGE_DIR", defaultStorageDir),
+		Port:                    listenPort(),
+		DatabaseURL:             os.Getenv("DATABASE_URL"),
+		CORSOrigin:              getenv("CORS_ORIGIN", "*"),
+		GeminiAPIKey:            os.Getenv("GEMINI_API_KEY"),
+		GeminiBaseURL:           strings.TrimRight(getenv("GEMINI_BASE_URL", defaultGeminiBaseURL), "/"),
+		GeminiEmbeddingModel:    getenv("GEMINI_EMBEDDING_MODEL", defaultEmbedModel),
+		GeminiChatModel:         getenv("GEMINI_CHAT_MODEL", defaultChatModel),
+		GeminiChatFallbackModel: os.Getenv("GEMINI_CHAT_FALLBACK_MODEL"),
+		GeminiEmbedBatch:        getenvInt("GEMINI_EMBED_BATCH", defaultEmbedBatch),
+		GeminiMaxInFlight:       getenvInt("GEMINI_MAX_IN_FLIGHT", defaultGeminiMaxInFlight),
+		GeminiRetryBudget:       time.Duration(getenvInt("GEMINI_RETRY_BUDGET_SECONDS", 8)) * time.Second,
+		AskTopK:                 getenvInt("ASK_TOP_K", defaultAskTopK),
+		TrustedProxies:          splitCSV(os.Getenv("TRUSTED_PROXIES")),
+		AskTopKMax:              getenvInt("ASK_TOP_K_MAX", defaultAskTopKMax),
+		AskTimeout:              time.Duration(getenvInt("ASK_TIMEOUT_SECONDS", defaultAskTimeoutSec)) * time.Second,
+		MaxUploadBytes:          getenvInt64("MAX_UPLOAD_BYTES", defaultMaxUpload),
+		StorageDir:              getenv("STORAGE_DIR", defaultStorageDir),
 	}
 	if cfg.DatabaseURL == "" {
 		return config{}, fmt.Errorf("DATABASE_URL is required")
@@ -88,6 +99,18 @@ func loadConfig() (config, error) {
 	}
 	if cfg.AskTimeout < time.Second {
 		cfg.AskTimeout = time.Duration(defaultAskTimeoutSec) * time.Second
+	}
+	if cfg.GeminiMaxInFlight < 1 {
+		cfg.GeminiMaxInFlight = defaultGeminiMaxInFlight
+	}
+	if cfg.GeminiRetryBudget < time.Second {
+		cfg.GeminiRetryBudget = defaultGeminiRetryBudget
+	}
+	if cfg.GeminiRetryBudget > cfg.AskTimeout/2 {
+		cfg.GeminiRetryBudget = cfg.AskTimeout / 2
+		if cfg.GeminiRetryBudget < time.Second {
+			cfg.GeminiRetryBudget = time.Second
+		}
 	}
 	return cfg, nil
 }

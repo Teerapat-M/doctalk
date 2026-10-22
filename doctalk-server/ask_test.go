@@ -49,16 +49,30 @@ func (f *fakeChat) StreamAnswer(ctx context.Context, question string, chunks []r
 	return f.err
 }
 
-func TestClampK(t *testing.T) {
-	if got := clampK(0, 5, 20); got != 5 {
-		t.Fatalf("default k=%d", got)
+func TestParseOptionalK(t *testing.T) {
+	got, err := parseOptionalK(nil, 5, 20)
+	if err != "" || got != 5 {
+		t.Fatalf("default k=%d err=%s", got, err)
 	}
-	if got := clampK(3, 5, 20); got != 3 {
-		t.Fatalf("override k=%d", got)
+	three := 3
+	got, err = parseOptionalK(&three, 5, 20)
+	if err != "" || got != 3 {
+		t.Fatalf("override k=%d err=%s", got, err)
 	}
-	if got := clampK(99, 5, 20); got != 20 {
-		t.Fatalf("capped k=%d", got)
+	for _, n := range []int{0, -1, 1000000} {
+		v := n
+		if _, msg := parseOptionalK(&v, 5, 20); msg == "" {
+			t.Fatalf("k=%d should be rejected", n)
+		}
 	}
+}
+
+func postAsk(r http.Handler, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/ask", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
 }
 
 func TestCitationSnippet(t *testing.T) {
@@ -78,9 +92,7 @@ func TestAskRejectsEmptyQuestion(t *testing.T) {
 		embed: &fakeEmbedder{},
 		chat:  &fakeChat{},
 	})
-	w := httptest.NewRecorder()
-	body := `{"question":"   ","document_ids":["00000000-0000-0000-0000-000000000001"]}`
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/ask", strings.NewReader(body)))
+	w := postAsk(r, `{"question":"   ","document_ids":["00000000-0000-0000-0000-000000000001"]}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -88,10 +100,9 @@ func TestAskRejectsEmptyQuestion(t *testing.T) {
 
 func TestAskRequiresGemini(t *testing.T) {
 	r := newRouter(&server{cfg: config{CORSOrigin: "*"}})
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/ask", strings.NewReader(`{"question":"hi","document_ids":["x"]}`)))
+	w := postAsk(r, `{"question":"hi","document_ids":["00000000-0000-0000-0000-000000000001"]}`)
 	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status=%d", w.Code)
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -114,10 +125,11 @@ func TestAskSSEWithMockGemini(t *testing.T) {
 		chat:  chat,
 	}
 	r := newRouter(s)
+	k := 3
 	payload, _ := json.Marshal(askRequest{
 		Question:    "What dimensionality are the embeddings?",
 		DocumentIDs: []string{idA},
-		K:           3,
+		K:           &k,
 	})
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(payload))
@@ -175,9 +187,12 @@ func TestAskCapsKAndScopesToChosenDocs(t *testing.T) {
 		chat:  chat,
 	}
 	r := newRouter(s)
-	payload, _ := json.Marshal(askRequest{Question: "q", DocumentIDs: []string{id}, K: 99})
+	k := 2
+	payload, _ := json.Marshal(askRequest{Question: "q", DocumentIDs: []string{id}, K: &k})
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(payload)))
+	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -196,10 +211,66 @@ func TestAskMissingDocumentIs404(t *testing.T) {
 		chat:  &fakeChat{},
 	}
 	r := newRouter(s)
-	w := httptest.NewRecorder()
-	body := `{"question":"hi","document_ids":["00000000-0000-0000-0000-000000000001"]}`
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/ask", strings.NewReader(body)))
+	w := postAsk(r, `{"question":"hi","document_ids":["00000000-0000-0000-0000-000000000001"]}`)
 	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestAskMalformedDocumentIDIs400(t *testing.T) {
+	r := newRouter(&server{
+		cfg:   config{CORSOrigin: "*", AskTopK: 5, AskTopKMax: 20, AskTimeout: time.Minute},
+		embed: &fakeEmbedder{},
+		chat:  &fakeChat{},
+		db:    openTestDB(t),
+	})
+	w := postAsk(r, `{"question":"hi","document_ids":["not-a-uuid"]}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestAskRejectsKOutOfRange(t *testing.T) {
+	r := newRouter(&server{
+		cfg:   config{CORSOrigin: "*", AskTopK: 5, AskTopKMax: 20, AskTimeout: time.Minute},
+		embed: &fakeEmbedder{},
+		chat:  &fakeChat{},
+	})
+	for _, body := range []string{
+		`{"question":"hi","document_ids":["00000000-0000-0000-0000-000000000001"],"k":0}`,
+		`{"question":"hi","document_ids":["00000000-0000-0000-0000-000000000001"],"k":-1}`,
+		`{"question":"hi","document_ids":["00000000-0000-0000-0000-000000000001"],"k":1000000}`,
+	} {
+		w := postAsk(r, body)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("body=%s status=%d resp=%s", body, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestAskRequiresJSONContentType(t *testing.T) {
+	r := newRouter(&server{
+		cfg:   config{CORSOrigin: "*", AskTopK: 5, AskTopKMax: 20},
+		embed: &fakeEmbedder{},
+		chat:  &fakeChat{},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/ask", strings.NewReader(`{"question":"hi","document_ids":["00000000-0000-0000-0000-000000000001"]}`))
+	req.Header.Set("Content-Type", "text/plain")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestAskRejectsTrailingJSONJunk(t *testing.T) {
+	r := newRouter(&server{
+		cfg:   config{CORSOrigin: "*", AskTopK: 5, AskTopKMax: 20},
+		embed: &fakeEmbedder{},
+		chat:  &fakeChat{},
+	})
+	w := postAsk(r, `{"question":"hi","document_ids":["00000000-0000-0000-0000-000000000001"]} extra`)
+	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
@@ -217,7 +288,9 @@ func TestAskEmptyRetrievalStreamsNotFound(t *testing.T) {
 	r := newRouter(s)
 	payload, _ := json.Marshal(askRequest{Question: "What is this about?", DocumentIDs: []string{id}})
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(payload)))
+	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
 	events := parseTestSSE(t, w.Body.String())
 	if chat.calls != 0 {
 		t.Fatal("chat should not run when there are no chunks")
@@ -227,6 +300,63 @@ func TestAskEmptyRetrievalStreamsNotFound(t *testing.T) {
 	}
 	if len(events.citations) != 0 {
 		t.Fatalf("citations=%+v", events.citations)
+	}
+}
+
+func TestAskNotFoundMarkerDropsCitations(t *testing.T) {
+	db := openTestDB(t)
+	id := insertDoneDoc(t, db, "nf.pdf")
+	insertChunk(t, db, id, 0, 1, "unrelated weather notes", unitVec(0))
+	chat := &fakeChat{deltas: []string{"NOT_FOUND\n", "The answer is not found in the document."}}
+	s := &server{
+		db:    db,
+		cfg:   config{CORSOrigin: "*", AskTopK: 5, AskTopKMax: 20, AskTimeout: time.Minute},
+		embed: &fakeEmbedder{query: unitVec(0)},
+		chat:  chat,
+	}
+	r := newRouter(s)
+	payload, _ := json.Marshal(askRequest{Question: "What dimensionality are the embeddings?", DocumentIDs: []string{id}})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	events := parseTestSSE(t, w.Body.String())
+	if strings.Contains(strings.Join(events.deltas, ""), "NOT_FOUND") {
+		t.Fatalf("marker leaked: %q", events.deltas)
+	}
+	if !strings.Contains(strings.Join(events.deltas, ""), "not found") {
+		t.Fatalf("deltas=%q", events.deltas)
+	}
+	if len(events.citations) != 0 {
+		t.Fatalf("citations=%+v", events.citations)
+	}
+}
+
+func TestAskUpstreamFailureAfterValidationIsSSE(t *testing.T) {
+	db := openTestDB(t)
+	id := insertDoneDoc(t, db, "emb.pdf")
+	insertChunk(t, db, id, 0, 1, "hello", unitVec(0))
+	s := &server{
+		db:    db,
+		cfg:   config{CORSOrigin: "*", AskTopK: 5, AskTopKMax: 20, AskTimeout: time.Minute},
+		embed: &fakeEmbedder{query: unitVec(0), err: errors.New("gemini embedding: HTTP 429: RESOURCE_EXHAUSTED")},
+		chat:  &fakeChat{deltas: []string{"nope"}},
+	}
+	r := newRouter(s)
+	payload, _ := json.Marshal(askRequest{Question: "q", DocumentIDs: []string{id}})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("ctype=%s", w.Header().Get("Content-Type"))
+	}
+	events := parseTestSSE(t, w.Body.String())
+	if events.err == "" || !strings.Contains(events.err, "429") {
+		t.Fatalf("want SSE 429, got %+v body=%s", events, w.Body.String())
 	}
 }
 
@@ -243,8 +373,13 @@ func TestAskTimeoutBeforeStream(t *testing.T) {
 	r := newRouter(s)
 	payload, _ := json.Marshal(askRequest{Question: "q", DocumentIDs: []string{id}})
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(payload)))
+	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
 	body := w.Body.String()
+	if w.Header().Get("Content-Type") != "" && !strings.Contains(w.Header().Get("Content-Type"), "text/event-stream") && w.Code != http.StatusOK {
+		t.Fatalf("status=%d ctype=%s body=%s", w.Code, w.Header().Get("Content-Type"), body)
+	}
 	if !strings.Contains(body, "timed out") && !strings.Contains(body, "error") {
 		t.Fatalf("status=%d body=%s", w.Code, body)
 	}
@@ -268,6 +403,7 @@ func TestAskCancelStopsChat(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	payload, _ := json.Marshal(askRequest{Question: "q", DocumentIDs: []string{id}})
 	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(payload)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
 	go func() {
 		time.Sleep(30 * time.Millisecond)
 		cancel()
@@ -293,7 +429,9 @@ func TestAskRedactsKeyInErrorEvent(t *testing.T) {
 	r := newRouter(s)
 	payload, _ := json.Marshal(askRequest{Question: "q", DocumentIDs: []string{id}})
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(payload)))
+	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
 	if strings.Contains(w.Body.String(), secret) {
 		t.Fatalf("key leaked: %s", w.Body.String())
 	}

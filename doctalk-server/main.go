@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"log"
+	"os"
+
+	"github.com/gin-gonic/gin"
 )
 
 func main() {
@@ -12,6 +15,10 @@ func main() {
 }
 
 func run() error {
+	if os.Getenv("GIN_MODE") == "" {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -31,8 +38,9 @@ func run() error {
 	var embed Embedder
 	var chat ChatStreamer
 	if cfg.GeminiAPIKey != "" {
-		embed = newGeminiEmbedder(cfg)
-		chat = newGeminiChat(cfg)
+		lim := newSlotLimiter(cfg.GeminiMaxInFlight)
+		embed = newGeminiEmbedder(cfg, lim)
+		chat = newGeminiChat(cfg, lim)
 	}
 
 	s := &server{

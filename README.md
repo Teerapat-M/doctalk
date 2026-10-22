@@ -34,9 +34,11 @@ Content-Type: application/json
 }
 ```
 
-`k` is optional. Default `ASK_TOP_K` (5), hard cap `ASK_TOP_K_MAX` (20). `ASK_TIMEOUT_SECONDS` (60) bounds the whole request. Client disconnect cancels the upstream Gemini call.
+`k` is optional. If omitted, the server uses `ASK_TOP_K` (5). If present, it must be an integer from 1 through `ASK_TOP_K_MAX` (20); `0`, negatives, and values above the cap are **400**. `document_ids` must be UUIDs (**400** if malformed, **404** if unknown). `Content-Type` must be `application/json` (**415** otherwise). Trailing junk after the JSON object is **400**.
 
-Pre-stream failures are JSON (`400` / `404` / `409` / `503` / `504` / `502`). On success the response is **SSE** (`text/event-stream`).
+`ASK_TIMEOUT_SECONDS` (60) bounds the whole request. Client disconnect cancels the upstream Gemini call. Gemini 429/503 retries are capped (`GEMINI_RETRY_BUDGET_SECONDS` default 8, at most 3 attempts) well under that timeout; if they still fail, the client gets an SSE `error` with the redacted upstream reason (for example `HTTP 503 UNAVAILABLE`), not a generic timeout. Optional `GEMINI_CHAT_FALLBACK_MODEL` is tried **once** after the primary returns 503; leave it unset unless you have a working free-tier model.
+
+Validation errors stay JSON **before** the stream (`400` / `404` / `409` / `415` / `503` if the API key is missing). Once the request is valid and the documents are ready, the response is **SSE** (`text/event-stream`). Query embedding, retrieval, and chat failures after that are SSE `error` events (including Gemini 429). Delta / final / error are the only stream events. A not-found answer (empty retrieval, or Gemini's `NOT_FOUND` first-line signal) sends `final` with `"citations":[]`.
 
 ### SSE events
 
@@ -50,14 +52,14 @@ event: final
 data: {"citations":[{"document_id":"<uuid>","page_number":2,"chunk_id":"<uuid>","snippet":"…"}]}
 ```
 
-If generation fails after the stream has started:
+If an upstream call fails after the stream has started:
 
 ```
 event: error
-data: {"error":"gemini chat: HTTP 429: RESOURCE_EXHAUSTED: …"}
+data: {"error":"gemini chat: HTTP 503: UNAVAILABLE: high demand"}
 ```
 
-Errors keep Gemini's status and message with the API key stripped (including `?key=`). The key is sent only as `x-goog-api-key`, never as a query parameter.
+Errors keep Gemini's status and message with the API key stripped (including `?key=`). The key is sent only as `x-goog-api-key`, never as a query parameter. Concurrent `/ask` calls share a bounded Gemini slot limiter (`GEMINI_MAX_IN_FLIGHT`, default 2) that is released before backoff sleeps. Gin runs in release mode unless `GIN_MODE` is set; trusted proxies default to none (`TRUSTED_PROXIES` comma-separated to override).
 
 ### Thai-aware chunking
 
@@ -69,16 +71,16 @@ Thai has no spaces between words. DocTalk does **not** use a dictionary segmente
 
 ## Local ports
 
-Defaults avoid collisions with another project on 5433 / 5173 / 8080:
+Defaults avoid collisions with 5433 / 5173 / 8080 and with 8081 / 5174 on the owner's PC:
 
 | Service | Env | Default |
 | --- | --- | --- |
 | Postgres (host) | `DB_PORT` | 5435 |
-| API | `API_PORT` (then `PORT`) | 8081 |
-| Vite | `VITE_PORT` | 5174 |
-| Browser → API | `VITE_API_URL` | http://localhost:8081 |
+| API | `API_PORT` (then `PORT`) | 8181 |
+| Vite | `VITE_PORT` | 5191 (bound to `127.0.0.1`) |
+| Browser → API | `VITE_API_URL` | http://localhost:8181 |
 
-Inside docker-compose, Postgres is still 5432 on the private network. `DB_PORT` / `API_PORT` only change the **host** bindings. The server prefers `API_PORT`, then `PORT` (Render), then 8081.
+Inside docker-compose, Postgres is still 5432 on the private network. `DB_PORT` / `API_PORT` only change the **host** bindings. The server prefers `API_PORT`, then `PORT` (Render), then 8181.
 
 ## Setup
 
@@ -106,8 +108,8 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
 
    ```
    set DATABASE_URL=postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable
-   set API_PORT=8081
-   set CORS_ORIGIN=http://localhost:5174
+   set API_PORT=8181
+   set CORS_ORIGIN=http://localhost:5191
    set GEMINI_API_KEY=your-free-tier-key
    set GEMINI_BASE_URL=https://generativelanguage.googleapis.com
    set GEMINI_CHAT_MODEL=gemini-3.8-flash
@@ -118,15 +120,15 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
 
    ```
    export DATABASE_URL=postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable
-   export API_PORT=8081
-   export CORS_ORIGIN=http://localhost:5174
+   export API_PORT=8181
+   export CORS_ORIGIN=http://localhost:5191
    export GEMINI_API_KEY=your-free-tier-key
    export GEMINI_BASE_URL=https://generativelanguage.googleapis.com
    export GEMINI_CHAT_MODEL=gemini-3.8-flash
    cd doctalk-server && go run .
    ```
 
-   The process binds to `0.0.0.0:$API_PORT` (or `$PORT`). Open http://localhost:8081/health
+   The process binds to `0.0.0.0:$API_PORT` (or `$PORT`). Open http://localhost:8181/health
 
 4. Run the client (Vite loads the repo-root `.env` via `envDir`):
 
@@ -136,16 +138,16 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    npm run dev
    ```
 
-   Vite listens on `VITE_PORT` (5174) and proxies `/health`, `/documents`, and `/ask` to `VITE_API_URL`.
+   Vite listens on `VITE_PORT` (5191) and proxies `/health`, `/documents`, and `/ask` to `VITE_API_URL`.
 
 Use the Gemini **free tier**. Do not put the key in git or CI.
 
 ### Upload a PDF
 
 ```
-curl -s -F file=@paper.pdf http://localhost:8081/documents
-curl -s http://localhost:8081/documents
-curl -s http://localhost:8081/documents/<id>
+curl -s -F file=@paper.pdf http://localhost:8181/documents
+curl -s http://localhost:8181/documents
+curl -s http://localhost:8181/documents/<id>
 ```
 
 `POST` returns **202** and processing continues in the background. Poll `GET /documents/:id` until `status` is `done` or `failed`. Embed failures store Gemini's HTTP status and error message, with the API key stripped (including `?key=` query values).
@@ -155,20 +157,20 @@ curl -s http://localhost:8081/documents/<id>
 ```
 curl -N -sS -H "Content-Type: application/json" ^
   -d "{\"question\":\"What dimensionality are the embeddings?\",\"document_ids\":[\"<id>\"]}" ^
-  http://localhost:8081/ask
+  http://localhost:8181/ask
 ```
 
 Unix: drop the `^` line continuations.
 
 ### Smoke test (real Gemini key)
 
-Postgres with pgvector on **5435**, API on **8081**, no Docker for the server:
+Postgres with pgvector on **5435**, API on **8181**, no Docker for the server:
 
 Windows cmd.exe (Postgres already listening on 5435):
 
 ```
 set DATABASE_URL=postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable
-set API_PORT=8081
+set API_PORT=8181
 set GEMINI_API_KEY=your-free-tier-key
 set GEMINI_BASE_URL=https://generativelanguage.googleapis.com
 set GEMINI_CHAT_MODEL=gemini-3.8-flash
@@ -179,7 +181,7 @@ Unix:
 
 ```
 export DATABASE_URL=postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable
-export API_PORT=8081
+export API_PORT=8181
 export GEMINI_API_KEY=your-free-tier-key
 export GEMINI_BASE_URL=https://generativelanguage.googleapis.com
 export GEMINI_CHAT_MODEL=gemini-3.8-flash

@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -27,14 +26,19 @@ type geminiEmbedder struct {
 	http       *http.Client
 	batchSize  int
 	maxRetries int
+	budget     time.Duration
 	sleep      func(context.Context, time.Duration) error
-	mu         sync.Mutex
+	limiter    *slotLimiter
 }
 
-func newGeminiEmbedder(cfg config) *geminiEmbedder {
+func newGeminiEmbedder(cfg config, lim *slotLimiter) *geminiEmbedder {
 	base := cfg.GeminiBaseURL
 	if base == "" {
 		base = defaultGeminiBaseURL
+	}
+	budget := cfg.GeminiRetryBudget
+	if budget <= 0 {
+		budget = defaultGeminiRetryBudget
 	}
 	return &geminiEmbedder{
 		apiKey:     cfg.GeminiAPIKey,
@@ -42,8 +46,10 @@ func newGeminiEmbedder(cfg config) *geminiEmbedder {
 		baseURL:    strings.TrimRight(base, "/"),
 		http:       &http.Client{Timeout: 60 * time.Second},
 		batchSize:  cfg.GeminiEmbedBatch,
-		maxRetries: 6,
+		maxRetries: defaultGeminiAttempts,
+		budget:     budget,
 		sleep:      defaultSleep,
+		limiter:    lim,
 	}
 }
 
@@ -78,10 +84,6 @@ func (g *geminiEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 		batch = defaultEmbedBatch
 	}
 
-	// ponytail: process-wide lock so concurrent uploads don't stampede free-tier RPM.
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
 	out := make([][]float32, 0, len(texts))
 	for i := 0; i < len(texts); i += batch {
 		end := i + batch
@@ -101,8 +103,6 @@ func (g *geminiEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32
 	if strings.TrimSpace(text) == "" {
 		return nil, g.errf("gemini embedding: empty query")
 	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
 	vecs, err := g.embedBatch(ctx, []string{text}, "RETRIEVAL_QUERY")
 	if err != nil {
 		return nil, err
@@ -162,33 +162,23 @@ func (g *geminiEmbedder) embedBatch(ctx context.Context, texts []string, taskTyp
 		return nil, err
 	}
 
-	var last error
-	delay := 500 * time.Millisecond
-	attempts := g.maxRetries
-	if attempts < 1 {
-		attempts = 1
+	var vecs [][]float32
+	policy := geminiRetry{
+		attempts: g.maxRetries,
+		budget:   g.budget,
+		sleep:    g.sleep,
+		limiter:  g.limiter,
 	}
-	for attempt := 0; attempt < attempts; attempt++ {
-		vecs, retryAfter, err := g.doEmbed(ctx, payload)
-		if err == nil {
-			return vecs, nil
-		}
-		last = err
-		if retryAfter < 0 {
-			return nil, err
-		}
-		wait := delay
-		if retryAfter > 0 {
-			wait = retryAfter
-		}
-		if err := g.sleep(ctx, wait); err != nil {
-			return nil, err
-		}
-		if delay < 16*time.Second {
-			delay *= 2
-		}
+	err = policy.do(ctx, func() (time.Duration, error) {
+		var retryAfter time.Duration
+		var callErr error
+		vecs, retryAfter, callErr = g.doEmbed(ctx, payload)
+		return retryAfter, callErr
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil, g.errf("gemini embedding: retries exhausted: %v", last)
+	return vecs, nil
 }
 
 // doEmbed returns retryAfter >= 0 when the caller should retry (429/503).

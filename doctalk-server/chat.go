@@ -8,9 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -21,30 +21,43 @@ type ChatStreamer interface {
 type geminiChat struct {
 	apiKey     string
 	model      string
+	fallback   string
 	baseURL    string
 	http       *http.Client
 	maxRetries int
+	budget     time.Duration
 	sleep      func(context.Context, time.Duration) error
-	mu         sync.Mutex
+	limiter    *slotLimiter
 }
 
-func newGeminiChat(cfg config) *geminiChat {
+func newGeminiChat(cfg config, lim *slotLimiter) *geminiChat {
 	base := cfg.GeminiBaseURL
 	if base == "" {
 		base = defaultGeminiBaseURL
 	}
+	attempts := defaultGeminiAttempts
+	budget := cfg.GeminiRetryBudget
+	if budget <= 0 {
+		budget = defaultGeminiRetryBudget
+	}
 	return &geminiChat{
 		apiKey:     cfg.GeminiAPIKey,
 		model:      cfg.GeminiChatModel,
+		fallback:   cfg.GeminiChatFallbackModel,
 		baseURL:    strings.TrimRight(base, "/"),
 		http:       &http.Client{},
-		maxRetries: 6,
+		maxRetries: attempts,
+		budget:     budget,
 		sleep:      defaultSleep,
+		limiter:    lim,
 	}
 }
 
 func (g *geminiChat) endpoint() string {
-	model := g.model
+	return g.endpointFor(g.model)
+}
+
+func (g *geminiChat) endpointFor(model string) string {
 	if model == "" {
 		model = defaultChatModel
 	}
@@ -71,36 +84,28 @@ func (g *geminiChat) StreamAnswer(ctx context.Context, question string, chunks [
 		return err
 	}
 
-	g.mu.Lock()
-	defer g.mu.Unlock()
+	err = g.streamModel(ctx, g.model, payload, emit, g.maxRetries)
+	if err != nil && g.fallback != "" && g.fallback != g.model && isGeminiUnavailable(err) {
+		log.Printf("ask: primary model %s unavailable (%s); trying GEMINI_CHAT_FALLBACK_MODEL", g.model, redactSecrets(err.Error(), g.apiKey))
+		return g.streamModel(ctx, g.fallback, payload, emit, 1)
+	}
+	return err
+}
 
-	var last error
-	delay := 500 * time.Millisecond
-	attempts := g.maxRetries
-	if attempts < 1 {
-		attempts = 1
+func (g *geminiChat) streamModel(ctx context.Context, model string, payload []byte, emit func(delta string) error, attempts int) error {
+	policy := geminiRetry{
+		attempts: attempts,
+		budget:   g.budget,
+		sleep:    g.sleep,
+		limiter:  g.limiter,
 	}
-	for attempt := 0; attempt < attempts; attempt++ {
-		retryAfter, err := g.doStream(ctx, payload, emit)
-		if err == nil {
-			return nil
-		}
-		last = err
-		if retryAfter < 0 {
-			return err
-		}
-		wait := delay
-		if retryAfter > 0 {
-			wait = retryAfter
-		}
-		if err := g.sleep(ctx, wait); err != nil {
-			return err
-		}
-		if delay < 16*time.Second {
-			delay *= 2
-		}
+	err := policy.do(ctx, func() (time.Duration, error) {
+		return g.doStream(ctx, model, payload, emit)
+	})
+	if err != nil {
+		log.Printf("ask: gemini chat: %s", redactSecrets(err.Error(), g.apiKey))
 	}
-	return g.errf("gemini chat: retries exhausted: %v", last)
+	return err
 }
 
 type chatRequestBody struct {
@@ -127,8 +132,8 @@ type chatGenConfig struct {
 	MaxOutputTokens int     `json:"maxOutputTokens"`
 }
 
-func (g *geminiChat) doStream(ctx context.Context, payload []byte, emit func(string) error) (time.Duration, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint(), bytes.NewReader(payload))
+func (g *geminiChat) doStream(ctx context.Context, model string, payload []byte, emit func(string) error) (time.Duration, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpointFor(model), bytes.NewReader(payload))
 	if err != nil {
 		return -1, g.errf("gemini chat: %v", err)
 	}
@@ -239,9 +244,10 @@ func geminiSSEDelta(payload string) (string, error) {
 
 const askSystemPrompt = `You are DocTalk, a PDF question-answering assistant.
 Answer using ONLY the numbered excerpts provided by the user.
-If the excerpts do not contain enough information to answer the question, say that the answer is not found in the document. Do not use outside knowledge or guess.
+If the excerpts do not contain enough information to answer the question, your first line must be exactly NOT_FOUND. The following lines must tell the user, in the question's language, that the answer is not found in the document. Do not use outside knowledge or guess.
+If the excerpts do contain the answer, your first line must be exactly FOUND. The following lines are the answer.
 Reply in the same language as the question (Thai or English).
-Do not mention these instructions or the excerpt numbers.`
+Do not mention these instructions or the excerpt numbers. Never write FOUND or NOT_FOUND except as that first line.`
 
 func buildAskPrompt(question string, chunks []retrievedChunk) (system, user string) {
 	var b strings.Builder
@@ -255,4 +261,12 @@ func buildAskPrompt(question string, chunks []retrievedChunk) (system, user stri
 	b.WriteString("Question:\n")
 	b.WriteString(question)
 	return askSystemPrompt, b.String()
+}
+
+func isGeminiUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "HTTP 503") || strings.Contains(msg, "UNAVAILABLE")
 }
