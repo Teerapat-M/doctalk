@@ -52,7 +52,7 @@ curl -sS -f "$api/health" >/dev/null
 upload() {
 	file=$1
 	label=$2
-	echo "uploading $label"
+	echo "uploading $label" >&2
 	resp=$(curl -sS -F "file=@${file}" "$api/documents")
 	id=$(printf '%s' "$resp" | json_field id || true)
 	if [ -z "$id" ] || ! is_uuid "$id"; then
