@@ -28,6 +28,8 @@ const (
 	maxQuestionRunes     = 4000
 	maxAskDocumentIDs    = 32
 	citationSnippetRunes = 240
+	defaultQuizN         = 5
+	defaultQuizNMax      = 20
 )
 
 type config struct {
@@ -38,7 +40,9 @@ type config struct {
 	GeminiBaseURL        string
 	GeminiEmbeddingModel string
 	GeminiChatModel      string
+	GeminiQuizModel      string
 	GeminiEmbedBatch     int
+	QuizNMax             int
 	AskTopK              int
 	AskTopKMax           int
 	AskTimeout           time.Duration
@@ -55,7 +59,9 @@ func loadConfig() (config, error) {
 		GeminiBaseURL:        strings.TrimRight(getenv("GEMINI_BASE_URL", defaultGeminiBaseURL), "/"),
 		GeminiEmbeddingModel: getenv("GEMINI_EMBEDDING_MODEL", defaultEmbedModel),
 		GeminiChatModel:      getenv("GEMINI_CHAT_MODEL", defaultChatModel),
+		GeminiQuizModel:      os.Getenv("GEMINI_QUIZ_MODEL"),
 		GeminiEmbedBatch:     getenvInt("GEMINI_EMBED_BATCH", defaultEmbedBatch),
+		QuizNMax:             getenvInt("QUIZ_N_MAX", defaultQuizNMax),
 		AskTopK:              getenvInt("ASK_TOP_K", defaultAskTopK),
 		AskTopKMax:           getenvInt("ASK_TOP_K_MAX", defaultAskTopKMax),
 		AskTimeout:           time.Duration(getenvInt("ASK_TIMEOUT_SECONDS", defaultAskTimeoutSec)) * time.Second,
@@ -76,6 +82,15 @@ func loadConfig() (config, error) {
 	}
 	if cfg.GeminiChatModel == "" {
 		cfg.GeminiChatModel = defaultChatModel
+	}
+	if cfg.GeminiQuizModel == "" {
+		cfg.GeminiQuizModel = cfg.GeminiChatModel
+	}
+	if cfg.QuizNMax < 1 {
+		cfg.QuizNMax = defaultQuizNMax
+	}
+	if cfg.QuizNMax > 50 {
+		cfg.QuizNMax = 50
 	}
 	if cfg.AskTopKMax < 1 {
 		cfg.AskTopKMax = defaultAskTopKMax

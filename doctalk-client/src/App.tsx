@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchHealth, type HealthResponse } from "./health";
+import QuizPanel from "./QuizPanel";
 
 const apiBase = import.meta.env.VITE_API_URL ?? "";
 
@@ -26,10 +27,14 @@ export default function App() {
   return (
     <main>
       <h1>DocTalk</h1>
-      <p>Ask questions about your PDFs.</p>
+      <p className="lede">Ask questions about your PDFs and spreadsheets.</p>
       <section aria-live="polite">
         <h2>API health</h2>
-        {error ? <p role="alert">Could not reach API: {error}</p> : null}
+        {error ? (
+          <p className="error" role="alert">
+            Could not reach API: {error}
+          </p>
+        ) : null}
         {health ? (
           <ul>
             <li>status: {health.status}</li>
@@ -38,6 +43,7 @@ export default function App() {
         ) : null}
         {!error && !health ? <p>Checking…</p> : null}
       </section>
+      <QuizPanel />
     </main>
   );
 }

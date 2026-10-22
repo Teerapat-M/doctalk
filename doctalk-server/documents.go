@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,16 +28,19 @@ const (
 )
 
 type documentJSON struct {
-	ID           string    `json:"id"`
-	Filename     string    `json:"filename"`
-	ContentType  string    `json:"content_type"`
-	ByteSize     int64     `json:"byte_size"`
-	Status       string    `json:"status"`
-	ErrorMessage *string   `json:"error_message"`
-	PageCount    int       `json:"page_count"`
-	ChunkCount   int       `json:"chunk_count"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           string      `json:"id"`
+	Filename     string      `json:"filename"`
+	ContentType  string      `json:"content_type"`
+	ByteSize     int64       `json:"byte_size"`
+	Status       string      `json:"status"`
+	ErrorMessage *string     `json:"error_message"`
+	PageCount    int         `json:"page_count"`
+	ChunkCount   int         `json:"chunk_count"`
+	SourceKind   string      `json:"source_kind"`
+	SheetName    string      `json:"sheet_name,omitempty"`
+	Sheets       []sheetInfo `json:"sheets,omitempty"`
+	CreatedAt    time.Time   `json:"created_at"`
+	UpdatedAt    time.Time   `json:"updated_at"`
 }
 
 func (s *server) uploadDocument(c *gin.Context) {
@@ -68,40 +72,58 @@ func (s *server) uploadDocument(c *gin.Context) {
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
 		return
 	}
-	if !isPDF(data) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "file is not a PDF"})
+	filename := filepath.Base(hdr.Filename)
+	kind := detectKind(data, filename)
+	if kind == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file is not a PDF, XLSX, or CSV"})
 		return
 	}
 	if s.embed == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "GEMINI_API_KEY is not configured"})
 		return
 	}
-	if s.db == nil || s.store == nil || s.extract == nil {
+	if s.db == nil || s.store == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "server is not configured"})
+		return
+	}
+	if kind == kindPDF && s.extract == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "server is not configured"})
 		return
 	}
 
-	filename := filepath.Base(hdr.Filename)
 	if filename == "" || filename == "." || filename == string(filepath.Separator) {
-		filename = "upload.pdf"
+		filename = "upload." + kind
 	}
 	if !utf8.ValidString(filename) {
-		filename = "upload.pdf"
+		filename = "upload." + kind
+	}
+
+	ctype := contentTypeForKind(kind)
+	status := statusUploading
+	var sheets []sheetInfo
+	if kind == kindXLSX || kind == kindCSV {
+		parsed, err := parseWorkbook(data, kind)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		sheets = parsed
+		status = statusMapping
 	}
 
 	ctx := c.Request.Context()
 	var id string
 	err = s.db.QueryRowContext(ctx, `
-		INSERT INTO documents (filename, content_type, byte_size, status, storage_key)
-		VALUES ($1, 'application/pdf', $2, $3, '')
+		INSERT INTO documents (filename, content_type, byte_size, status, storage_key, source_kind, sheets_json)
+		VALUES ($1, $2, $3, $4, '', $5, $6)
 		RETURNING id
-	`, filename, int64(len(data)), statusUploading).Scan(&id)
+	`, filename, ctype, int64(len(data)), status, kind, sheetsJSON(sheets)).Scan(&id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create document"})
 		return
 	}
 
-	key := id + ".pdf"
+	key := id + "." + kind
 	if err := s.store.Put(ctx, key, bytes.NewReader(data)); err != nil {
 		s.fail(ctx, id, fmt.Errorf("store: %w", err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not store file"})
@@ -113,11 +135,13 @@ func (s *server) uploadDocument(c *gin.Context) {
 		return
 	}
 
-	s.enqueueProcess(id, key)
+	if kind == kindPDF {
+		s.enqueueProcess(id, key)
+	}
 
 	doc, err := s.loadDocument(ctx, id)
 	if err != nil {
-		c.JSON(http.StatusAccepted, gin.H{"id": id, "status": statusUploading})
+		c.JSON(http.StatusAccepted, gin.H{"id": id, "status": status})
 		return
 	}
 	c.JSON(http.StatusAccepted, doc)
@@ -180,37 +204,7 @@ func (s *server) process(ctx context.Context, id, key string) {
 		return
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		s.fail(ctx, id, err)
-		return
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.ExecContext(ctx, `DELETE FROM chunks WHERE document_id = $1`, id); err != nil {
-		s.fail(ctx, id, err)
-		return
-	}
-	for i, ch := range chunks {
-		if len(vecs[i]) != EmbeddingDim {
-			s.fail(ctx, id, fmt.Errorf("embed: vector dim %d, want %d", len(vecs[i]), EmbeddingDim))
-			return
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO chunks (document_id, chunk_index, page_number, content, embedding)
-			VALUES ($1, $2, $3, $4, $5::vector)
-		`, id, ch.Index, ch.Page, ch.Text, vectorLiteral(vecs[i])); err != nil {
-			s.fail(ctx, id, fmt.Errorf("store chunks: %w", err))
-			return
-		}
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE documents SET status=$2, error_message=NULL, page_count=$3, updated_at=now() WHERE id=$1
-	`, id, statusDone, len(pages)); err != nil {
-		s.fail(ctx, id, err)
-		return
-	}
-	if err := tx.Commit(); err != nil {
+	if err := s.replaceChunks(ctx, id, chunks, vecs, len(pages)); err != nil {
 		s.fail(ctx, id, err)
 	}
 }
@@ -268,7 +262,7 @@ func (s *server) loadDocuments(ctx context.Context, id string) ([]documentJSON, 
 	q := `
 		SELECT d.id::text, d.filename, d.content_type, d.byte_size, d.status,
 		       d.error_message, d.page_count, d.created_at, d.updated_at,
-		       COUNT(c.id)::int
+		       COUNT(c.id)::int, d.source_kind, d.sheet_name, d.sheets_json
 		FROM documents d
 		LEFT JOIN chunks c ON c.document_id = d.id
 	`
@@ -289,14 +283,19 @@ func (s *server) loadDocuments(ctx context.Context, id string) ([]documentJSON, 
 	for rows.Next() {
 		var d documentJSON
 		var errMsg sql.NullString
+		var sheets sql.NullString
 		if err := rows.Scan(
 			&d.ID, &d.Filename, &d.ContentType, &d.ByteSize, &d.Status,
 			&errMsg, &d.PageCount, &d.CreatedAt, &d.UpdatedAt, &d.ChunkCount,
+			&d.SourceKind, &d.SheetName, &sheets,
 		); err != nil {
 			return nil, err
 		}
 		if errMsg.Valid {
 			d.ErrorMessage = &errMsg.String
+		}
+		if sheets.Valid && sheets.String != "" && sheets.String != "null" {
+			_ = json.Unmarshal([]byte(sheets.String), &d.Sheets)
 		}
 		out = append(out, d)
 	}

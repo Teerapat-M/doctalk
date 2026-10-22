@@ -1,8 +1,11 @@
+@import "./theme.css";
+
 :root {
-  font-family: "Segoe UI", system-ui, sans-serif;
-  line-height: 1.5;
-  color: #1b1b1b;
-  background: #f6f4ef;
+  font-family: var(--dt-font-sans);
+  font-size: var(--dt-font-size-body);
+  line-height: var(--dt-line-height);
+  color: var(--dt-color-text);
+  background: var(--dt-color-bg);
 }
 
 * {
@@ -14,23 +17,132 @@ body {
 }
 
 main {
-  max-width: 40rem;
+  max-width: var(--dt-max-width);
   margin: 0 auto;
-  padding: 2.5rem 1.25rem;
+  padding: var(--dt-space-8) var(--dt-space-5);
 }
 
 h1 {
-  margin: 0 0 0.25rem;
+  margin: 0 0 var(--dt-space-1);
+  font-size: var(--dt-font-size-title);
+  font-weight: var(--dt-font-weight-semibold);
+}
+
+h2 {
+  margin: 0 0 var(--dt-space-3);
+  font-size: var(--dt-font-size-heading);
+}
+
+.lede {
+  margin: 0;
+  color: var(--dt-color-text-muted);
 }
 
 section {
-  margin-top: 1.5rem;
-  padding: 1rem 1.25rem;
-  background: #fff;
-  border: 1px solid #e2ddd4;
-  border-radius: 8px;
+  margin-top: var(--dt-space-6);
+  padding: var(--dt-space-4) var(--dt-space-5);
+  background: var(--dt-color-surface);
+  border: 1px solid var(--dt-color-border);
+  border-radius: var(--dt-radius-md);
 }
 
 ul {
   padding-left: 1.2rem;
+}
+
+label,
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dt-space-1);
+  font-size: var(--dt-font-size-small);
+  color: var(--dt-color-text-muted);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dt-space-3);
+  align-items: flex-end;
+}
+
+select,
+input[type="number"],
+input[type="text"],
+input[type="file"] {
+  font: inherit;
+  color: var(--dt-color-text);
+  background: var(--dt-color-surface);
+  border: 1px solid var(--dt-color-border);
+  border-radius: var(--dt-radius-sm);
+  padding: var(--dt-space-2) var(--dt-space-3);
+}
+
+button {
+  font: inherit;
+  font-weight: var(--dt-font-weight-semibold);
+  color: var(--dt-color-accent-text);
+  background: var(--dt-color-accent);
+  border: 0;
+  border-radius: var(--dt-radius-sm);
+  padding: var(--dt-space-2) var(--dt-space-4);
+  cursor: pointer;
+}
+
+button.secondary {
+  color: var(--dt-color-text);
+  background: var(--dt-color-surface-muted);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.question {
+  margin-top: var(--dt-space-4);
+  padding: var(--dt-space-4);
+  background: var(--dt-color-surface-muted);
+  border-radius: var(--dt-radius-md);
+}
+
+.options {
+  list-style: none;
+  padding: 0;
+  margin: var(--dt-space-3) 0;
+}
+
+.options li {
+  padding: var(--dt-space-2) var(--dt-space-3);
+  border: 1px solid var(--dt-color-border);
+  border-radius: var(--dt-radius-sm);
+  background: var(--dt-color-surface);
+  margin-bottom: var(--dt-space-2);
+}
+
+.options li.correct {
+  border-color: var(--dt-color-correct);
+  background: var(--dt-color-accent-soft);
+}
+
+.answer-key {
+  font-size: var(--dt-font-size-small);
+  color: var(--dt-color-text-muted);
+}
+
+.citation {
+  margin: var(--dt-space-2) 0 0;
+  font-size: var(--dt-font-size-small);
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--dt-space-2);
+  font-size: var(--dt-font-size-small);
+  color: var(--dt-color-text);
+}
+
+.error {
+  color: var(--dt-color-danger);
 }

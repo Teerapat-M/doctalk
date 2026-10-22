@@ -30,6 +30,8 @@ services:
       GEMINI_BASE_URL: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com}
       GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-001}
       GEMINI_CHAT_MODEL: ${GEMINI_CHAT_MODEL:-gemini-3.8-flash}
+      GEMINI_QUIZ_MODEL: ${GEMINI_QUIZ_MODEL:-}
+      QUIZ_N_MAX: ${QUIZ_N_MAX:-20}
       ASK_TOP_K: ${ASK_TOP_K:-5}
       ASK_TOP_K_MAX: ${ASK_TOP_K_MAX:-20}
       ASK_TIMEOUT_SECONDS: ${ASK_TIMEOUT_SECONDS:-60}

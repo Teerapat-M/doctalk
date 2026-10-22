@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke-test PDF ingest and ask against a running DocTalk stack.
+# Smoke-test PDF/Excel ingest, ask, and quiz against a running DocTalk stack.
 # Requires GEMINI_API_KEY (never printed) and a reachable API + Postgres.
 set -euo pipefail
 
@@ -95,12 +95,12 @@ check_chunks() {
 		echo "$label has no chunks" >&2
 		exit 1
 	fi
-	bad=$(db_query "SELECT count(*) FROM chunks WHERE document_id = '$id' AND (page_number IS NULL OR page_number < 1 OR embedding IS NULL OR vector_dims(embedding) <> 768)")
+	bad=$(db_query "SELECT count(*) FROM chunks WHERE document_id = '$id' AND (embedding IS NULL OR vector_dims(embedding) <> 768 OR NOT ((page_number >= 1 AND sheet_name = '') OR (sheet_name <> '' AND row_number >= 1)))")
 	if [ "$bad" -ne 0 ]; then
-		echo "$label has $bad chunks missing page_number or 768-d embedding" >&2
+		echo "$label has $bad chunks missing page/sheet citation or 768-d embedding" >&2
 		exit 1
 	fi
-	echo "$label $n chunk(s), page_number set, vector_dims=768"
+	echo "$label $n chunk(s), page or sheet/row set, vector_dims=768"
 }
 
 ask() {
@@ -156,13 +156,91 @@ if not citations:
     sys.exit(1)
 for c in citations:
     cid = c.get("chunk_id") or ""
-    page = c.get("page_number")
+    page = c.get("page_number") or 0
+    sheet = c.get("sheet_name") or ""
+    row = c.get("row_number") or 0
     snippet = c.get("snippet") or ""
-    if not cid or not page:
-        sys.stderr.write("citation missing chunk_id or page_number\n")
+    if not cid:
+        sys.stderr.write("citation missing chunk_id\n")
         sys.exit(1)
-    print("%s page %s chunk %s %s" % (c.get("document_id"), page, cid, snippet))
+    if page:
+        loc = "page %s" % page
+    elif sheet and row:
+        loc = "sheet %s row %s" % (sheet, row)
+    else:
+        sys.stderr.write("citation missing page_number or sheet/row\n")
+        sys.exit(1)
+    print("%s %s chunk %s %s" % (c.get("document_id"), loc, cid, snippet))
 ' "$out"
+	rm -f "$out"
+}
+
+ingest_sheet() {
+	id=$1
+	sheet=$2
+	columns_json=$3
+	label=$4
+	payload=$(python3 -c 'import json,sys; print(json.dumps({"sheet":sys.argv[1],"columns":json.loads(sys.argv[2])}))' "$sheet" "$columns_json")
+	echo "ingesting $label sheet $sheet" >&2
+	code=$(curl -sS -o /tmp/doctalk-ingest.json -w '%{http_code}' \
+		-H 'Content-Type: application/json' -d "$payload" "$api/documents/$id/ingest") || true
+	if [ "$code" != "202" ]; then
+		echo "ingest $label HTTP $code: $(cat /tmp/doctalk-ingest.json)" >&2
+		exit 1
+	fi
+}
+
+quiz() {
+	id=$1
+	n=$2
+	mode=$3
+	echo "quiz $mode n=$n ($id)" >&2
+	payload=$(python3 -c 'import json,sys; print(json.dumps({"document_ids":[sys.argv[1]],"n":int(sys.argv[2]),"mode":sys.argv[3]}))' "$id" "$n" "$mode")
+	out=$(mktemp)
+	code=$(curl -sS --max-time 90 -o "$out" -w '%{http_code}' \
+		-H 'Content-Type: application/json' -d "$payload" "$api/quiz") || true
+	if [ -n "${GEMINI_API_KEY:-}" ] && grep -F -- "$GEMINI_API_KEY" "$out" >/dev/null 2>&1; then
+		echo "quiz leaked GEMINI_API_KEY" >&2
+		rm -f "$out"
+		exit 1
+	fi
+	if [ "$code" != "200" ]; then
+		echo "quiz HTTP $code: $(cat "$out")" >&2
+		rm -f "$out"
+		exit 1
+	fi
+	python3 -c '
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+want = int(sys.argv[2])
+questions = data.get("questions") or []
+if len(questions) < 1:
+    sys.stderr.write("quiz returned no questions\n")
+    sys.exit(1)
+if len(questions) > want:
+    sys.stderr.write("quiz returned %d questions, cap is %d\n" % (len(questions), want))
+    sys.exit(1)
+for q in questions:
+    opts = q.get("options") or {}
+    for letter in ("A", "B", "C", "D"):
+        if not opts.get(letter):
+            sys.stderr.write("quiz question missing option %s\n" % letter)
+            sys.exit(1)
+    if q.get("correct") not in ("A", "B", "C", "D"):
+        sys.stderr.write("quiz question missing a single correct option\n")
+        sys.exit(1)
+    if not (q.get("prompt") or "").strip() or not (q.get("explanation") or "").strip():
+        sys.stderr.write("quiz question missing prompt or explanation\n")
+        sys.exit(1)
+    cit = q.get("citation") or {}
+    page = cit.get("page_number") or 0
+    sheet = cit.get("sheet_name") or ""
+    row = cit.get("row_number") or 0
+    if not ((page and not sheet) or (sheet and row)):
+        sys.stderr.write("quiz citation missing page or sheet/row\n")
+        sys.exit(1)
+print("%d %s question(s)" % (len(questions), sys.argv[3]))
+' "$out" "$n" "$mode"
 	rm -f "$out"
 }
 
@@ -174,4 +252,16 @@ check_chunks "$en_id" english.pdf
 check_chunks "$th_id" thai.pdf
 ask "What dimensionality are the Gemini embedding vectors?" "$en_id"
 ask "กรุงเทพมหานครเป็นเมืองหลวงของประเทศใด" "$th_id"
+
+xlsx_id=$(upload "$server_dir/testdata/thai.xlsx" thai.xlsx)
+csv_id=$(upload "$server_dir/testdata/thai-quiz.csv" thai-quiz.csv)
+ingest_sheet "$xlsx_id" "คำถาม" '{"question":"คำถาม","answer":"คำตอบ","explanation":"คำอธิบาย"}' thai.xlsx
+ingest_sheet "$csv_id" "csv" '{"question":"question","answer":"answer","explanation":"explanation"}' thai-quiz.csv
+poll "$xlsx_id" thai.xlsx
+poll "$csv_id" thai-quiz.csv
+check_chunks "$xlsx_id" thai.xlsx
+check_chunks "$csv_id" thai-quiz.csv
+ask "เมืองหลวงของประเทศไทยคือที่ใด" "$xlsx_id"
+quiz "$xlsx_id" 3 generate
+quiz "$xlsx_id" 4 from_columns
 echo "smoke ok"

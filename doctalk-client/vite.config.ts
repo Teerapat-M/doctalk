@@ -22,6 +22,7 @@ export default defineConfig(({ mode }) => {
         "/health": { target: apiUrl, changeOrigin: true },
         "/documents": { target: apiUrl, changeOrigin: true },
         "/ask": { target: apiUrl, changeOrigin: true },
+        "/quiz": { target: apiUrl, changeOrigin: true },
       },
     },
     test: {

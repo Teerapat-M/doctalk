@@ -26,7 +26,9 @@ type deltaEvent struct {
 
 type citationJSON struct {
 	DocumentID string `json:"document_id"`
-	PageNumber int    `json:"page_number"`
+	PageNumber int    `json:"page_number,omitempty"`
+	SheetName  string `json:"sheet_name,omitempty"`
+	RowNumber  int    `json:"row_number,omitempty"`
 	ChunkID    string `json:"chunk_id"`
 	Snippet    string `json:"snippet"`
 }
@@ -40,10 +42,15 @@ type sseErrorEvent struct {
 }
 
 type retrievedChunk struct {
-	ID         string
-	DocumentID string
-	PageNumber int
-	Content    string
+	ID          string
+	DocumentID  string
+	PageNumber  int
+	SheetName   string
+	RowNumber   int
+	Content     string
+	Question    string
+	Answer      string
+	Explanation string
 }
 
 func (s *server) ask(c *gin.Context) {
@@ -243,7 +250,8 @@ func (s *server) retrieve(ctx context.Context, docIDs []string, query []float32,
 		k = 1
 	}
 	q := `
-		SELECT c.id::text, c.document_id::text, c.page_number, c.content
+		SELECT c.id::text, c.document_id::text, c.page_number, c.sheet_name, c.row_number,
+		       c.content, c.question, c.answer, c.explanation
 		FROM chunks c
 		JOIN documents d ON d.id = c.document_id
 		WHERE c.document_id = ANY($1::uuid[])
@@ -261,7 +269,7 @@ func (s *server) retrieve(ctx context.Context, docIDs []string, query []float32,
 	out := make([]retrievedChunk, 0, k)
 	for rows.Next() {
 		var ch retrievedChunk
-		if err := rows.Scan(&ch.ID, &ch.DocumentID, &ch.PageNumber, &ch.Content); err != nil {
+		if err := rows.Scan(&ch.ID, &ch.DocumentID, &ch.PageNumber, &ch.SheetName, &ch.RowNumber, &ch.Content, &ch.Question, &ch.Answer, &ch.Explanation); err != nil {
 			return nil, err
 		}
 		out = append(out, ch)
@@ -272,14 +280,20 @@ func (s *server) retrieve(ctx context.Context, docIDs []string, query []float32,
 func citationsFromChunks(chunks []retrievedChunk) []citationJSON {
 	out := make([]citationJSON, 0, len(chunks))
 	for _, ch := range chunks {
-		out = append(out, citationJSON{
-			DocumentID: ch.DocumentID,
-			PageNumber: ch.PageNumber,
-			ChunkID:    ch.ID,
-			Snippet:    citationSnippet(ch.Content, citationSnippetRunes),
-		})
+		out = append(out, citationFromChunk(ch))
 	}
 	return out
+}
+
+func citationFromChunk(ch retrievedChunk) citationJSON {
+	return citationJSON{
+		DocumentID: ch.DocumentID,
+		PageNumber: ch.PageNumber,
+		SheetName:  ch.SheetName,
+		RowNumber:  ch.RowNumber,
+		ChunkID:    ch.ID,
+		Snippet:    citationSnippet(ch.Content, citationSnippetRunes),
+	}
 }
 
 func citationSnippet(s string, maxRunes int) string {

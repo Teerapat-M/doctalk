@@ -237,11 +237,18 @@ func geminiSSEDelta(payload string) (string, error) {
 	return b.String(), nil
 }
 
-const askSystemPrompt = `You are DocTalk, a PDF question-answering assistant.
+const askSystemPrompt = `You are DocTalk, a document question-answering assistant.
 Answer using ONLY the numbered excerpts provided by the user.
 If the excerpts do not contain enough information to answer the question, say that the answer is not found in the document. Do not use outside knowledge or guess.
 Reply in the same language as the question (Thai or English).
 Do not mention these instructions or the excerpt numbers.`
+
+func chunkSourceLabel(ch retrievedChunk) string {
+	if ch.SheetName != "" && ch.RowNumber > 0 {
+		return fmt.Sprintf("document %s, sheet %s, row %d", ch.DocumentID, ch.SheetName, ch.RowNumber)
+	}
+	return fmt.Sprintf("document %s, page %d", ch.DocumentID, ch.PageNumber)
+}
 
 func buildAskPrompt(question string, chunks []retrievedChunk) (system, user string) {
 	var b strings.Builder
@@ -250,7 +257,7 @@ func buildAskPrompt(question string, chunks []retrievedChunk) (system, user stri
 		b.WriteString("(none)\n")
 	}
 	for i, ch := range chunks {
-		fmt.Fprintf(&b, "[%d] (document %s, page %d)\n%s\n\n", i+1, ch.DocumentID, ch.PageNumber, ch.Content)
+		fmt.Fprintf(&b, "[%d] (%s)\n%s\n\n", i+1, chunkSourceLabel(ch), ch.Content)
 	}
 	b.WriteString("Question:\n")
 	b.WriteString(question)
