@@ -27,7 +27,7 @@ const (
 	defaultGeminiBaseURL        = "https://generativelanguage.googleapis.com"
 	defaultAskTopK              = 5
 	defaultAskTopKMax           = 20
-	defaultAskTimeoutSec        = 60
+	defaultAskTimeoutSec        = 120
 	defaultGeminiAttempts       = 3
 	maxGeminiAttempts           = 8
 	defaultGeminiRetryBudget    = 8 * time.Second
@@ -274,6 +274,9 @@ func loadConfig() (config, error) {
 	}
 	if total < idle {
 		return config{}, fmt.Errorf("GEMINI_TOTAL_TIMEOUT_SECONDS must be at least GEMINI_REQUEST_TIMEOUT_SECONDS")
+	}
+	if total > cfg.AskTimeout {
+		return config{}, fmt.Errorf("GEMINI_TOTAL_TIMEOUT_SECONDS must not exceed ASK_TIMEOUT_SECONDS")
 	}
 	cfg.GeminiRequestTimeout = idle
 	cfg.GeminiTotalTimeout = total
