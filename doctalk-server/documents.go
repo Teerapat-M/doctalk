@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -331,10 +332,18 @@ func redactErr(err error, apiKey string) string {
 	if err == nil {
 		return ""
 	}
-	msg := err.Error()
+	return redactSecrets(err.Error(), apiKey)
+}
+
+// keyQueryRe matches ?key= and &key= query values (any case) so a leaked
+// Gemini URL never keeps the secret, even when it is not the configured key.
+var keyQueryRe = regexp.MustCompile(`(?i)([?&]key=)[^&\s"'<>\\]+`)
+
+func redactSecrets(msg, apiKey string) string {
 	if apiKey != "" {
 		msg = strings.ReplaceAll(msg, apiKey, "[redacted]")
 	}
+	msg = keyQueryRe.ReplaceAllString(msg, `${1}[redacted]`)
 	if len(msg) > 1000 {
 		msg = msg[:1000]
 	}

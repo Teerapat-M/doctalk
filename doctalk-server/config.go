@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // EmbeddingDim is the pgvector column size (migrations/0001_init.sql).
@@ -13,11 +14,12 @@ import (
 const EmbeddingDim = 768
 
 const (
-	defaultAPIPort    = "8081"
-	defaultMaxUpload  = 10 << 20 // 10 MiB
-	defaultStorageDir = "data/uploads"
-	defaultEmbedBatch = 16
-	defaultEmbedModel = "gemini-embedding-001"
+	defaultAPIPort       = "8081"
+	defaultMaxUpload     = 10 << 20 // 10 MiB
+	defaultStorageDir    = "data/uploads"
+	defaultEmbedBatch    = 16
+	defaultEmbedModel    = "gemini-embedding-001"
+	defaultGeminiBaseURL = "https://generativelanguage.googleapis.com"
 )
 
 type config struct {
@@ -25,6 +27,7 @@ type config struct {
 	DatabaseURL          string
 	CORSOrigin           string
 	GeminiAPIKey         string
+	GeminiBaseURL        string
 	GeminiEmbeddingModel string
 	GeminiEmbedBatch     int
 	MaxUploadBytes       int64
@@ -37,6 +40,7 @@ func loadConfig() (config, error) {
 		DatabaseURL:          os.Getenv("DATABASE_URL"),
 		CORSOrigin:           getenv("CORS_ORIGIN", "*"),
 		GeminiAPIKey:         os.Getenv("GEMINI_API_KEY"),
+		GeminiBaseURL:        strings.TrimRight(getenv("GEMINI_BASE_URL", defaultGeminiBaseURL), "/"),
 		GeminiEmbeddingModel: getenv("GEMINI_EMBEDDING_MODEL", defaultEmbedModel),
 		GeminiEmbedBatch:     getenvInt("GEMINI_EMBED_BATCH", defaultEmbedBatch),
 		MaxUploadBytes:       getenvInt64("MAX_UPLOAD_BYTES", defaultMaxUpload),
@@ -50,6 +54,9 @@ func loadConfig() (config, error) {
 	}
 	if cfg.MaxUploadBytes < 1 {
 		cfg.MaxUploadBytes = defaultMaxUpload
+	}
+	if cfg.GeminiBaseURL == "" {
+		cfg.GeminiBaseURL = defaultGeminiBaseURL
 	}
 	return cfg, nil
 }
