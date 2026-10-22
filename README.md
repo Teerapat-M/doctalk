@@ -23,7 +23,7 @@ Thai has no spaces between words. DocTalk does **not** use a dictionary segmente
 
 ### Embedding dimension
 
-`chunks.embedding` is **`vector(768)`**. That matches `gemini-embedding-001` with `outputDimensionality=768`. Values are L2-normalized (required by Gemini for non-3072 dims). The API key is read from `GEMINI_API_KEY` only, sent as `x-goog-api-key`, and never logged or committed.
+`chunks.embedding` is **`vector(768)`**. That matches `gemini-embedding-001` with `outputDimensionality=768`. Values are L2-normalized (required by Gemini for non-3072 dims). The API key is read from `GEMINI_API_KEY` only, sent as `x-goog-api-key`, and never logged or committed. The Gemini REST host is `GEMINI_BASE_URL` (default `https://generativelanguage.googleapis.com`).
 
 ## Local ports
 
@@ -67,6 +67,7 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    set API_PORT=8081
    set CORS_ORIGIN=http://localhost:5174
    set GEMINI_API_KEY=your-free-tier-key
+   set GEMINI_BASE_URL=https://generativelanguage.googleapis.com
    cd doctalk-server && go run .
    ```
 
@@ -77,6 +78,7 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    export API_PORT=8081
    export CORS_ORIGIN=http://localhost:5174
    export GEMINI_API_KEY=your-free-tier-key
+   export GEMINI_BASE_URL=https://generativelanguage.googleapis.com
    cd doctalk-server && go run .
    ```
 
@@ -102,7 +104,17 @@ curl -s http://localhost:8081/documents
 curl -s http://localhost:8081/documents/<id>
 ```
 
-`POST` returns **202** and processing continues in the background. Poll `GET /documents/:id` until `status` is `done` or `failed`.
+`POST` returns **202** and processing continues in the background. Poll `GET /documents/:id` until `status` is `done` or `failed`. Embed failures store Gemini's HTTP status and error message, with the API key stripped (including `?key=` query values).
+
+### Smoke test (real Gemini key)
+
+With the stack running (`docker compose up --build` or `go run .` plus Postgres) and `GEMINI_API_KEY` set in the environment or a repo-root `.env`:
+
+```
+bash doctalk-server/scripts/smoke.sh
+```
+
+The script uploads `testdata/english.pdf` and `testdata/thai.pdf`, polls until `done`/`failed`, then checks every chunk has `page_number` and `vector_dims(embedding) = 768`. It never prints the API key. Needs `curl`, `python3`, and either `psql` (`DATABASE_URL`) or `docker compose exec` to the `db` service. Exits non-zero on failure.
 
 ## Makefile
 

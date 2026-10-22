@@ -13,6 +13,7 @@ WORKDIR /app
 COPY --from=build /server /server
 ENV PORT=8081
 ENV STORAGE_DIR=/data/uploads
+ENV GIN_MODE=release
 EXPOSE 8081
 USER nobody
 ENTRYPOINT ["/server"]

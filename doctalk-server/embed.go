@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -30,10 +31,14 @@ type geminiEmbedder struct {
 }
 
 func newGeminiEmbedder(cfg config) *geminiEmbedder {
+	base := cfg.GeminiBaseURL
+	if base == "" {
+		base = defaultGeminiBaseURL
+	}
 	return &geminiEmbedder{
 		apiKey:     cfg.GeminiAPIKey,
 		model:      cfg.GeminiEmbeddingModel,
-		baseURL:    "https://generativelanguage.googleapis.com",
+		baseURL:    strings.TrimRight(base, "/"),
 		http:       &http.Client{Timeout: 60 * time.Second},
 		batchSize:  cfg.GeminiEmbedBatch,
 		maxRetries: 6,
@@ -166,7 +171,7 @@ func (g *geminiEmbedder) embedBatch(ctx context.Context, texts []string) ([][]fl
 			delay *= 2
 		}
 	}
-	return nil, fmt.Errorf("gemini embedding: retries exhausted: %w", last)
+	return nil, g.errf("gemini embedding: retries exhausted: %v", last)
 }
 
 // doEmbed returns retryAfter >= 0 when the caller should retry (429/503).
@@ -175,36 +180,36 @@ func (g *geminiEmbedder) embedBatch(ctx context.Context, texts []string) ([][]fl
 func (g *geminiEmbedder) doEmbed(ctx context.Context, payload []byte) ([][]float32, time.Duration, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint(), bytes.NewReader(payload))
 	if err != nil {
-		return nil, -1, err
+		return nil, -1, g.errf("gemini embedding: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-goog-api-key", g.apiKey)
 
 	res, err := g.http.Do(req)
 	if err != nil {
-		return nil, -1, fmt.Errorf("gemini embedding: request failed")
+		return nil, -1, g.errf("gemini embedding: request failed")
 	}
 	defer res.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 
 	if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable {
-		return nil, parseRetryAfter(res.Header.Get("Retry-After")), fmt.Errorf("gemini embedding: HTTP %d", res.StatusCode)
+		return nil, parseRetryAfter(res.Header.Get("Retry-After")), g.httpErr(res.StatusCode, body)
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, -1, fmt.Errorf("gemini embedding: HTTP %d", res.StatusCode)
+		return nil, -1, g.httpErr(res.StatusCode, body)
 	}
 
 	var parsed embedResponseBody
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, -1, fmt.Errorf("gemini embedding: bad response")
+		return nil, -1, g.errf("gemini embedding: bad response")
 	}
 	if len(parsed.Embeddings) == 0 {
-		return nil, -1, fmt.Errorf("gemini embedding: empty response")
+		return nil, -1, g.errf("gemini embedding: empty response")
 	}
 	out := make([][]float32, len(parsed.Embeddings))
 	for i, e := range parsed.Embeddings {
 		if len(e.Values) != EmbeddingDim {
-			return nil, -1, fmt.Errorf("gemini embedding: got %d dims, want %d", len(e.Values), EmbeddingDim)
+			return nil, -1, g.errf("gemini embedding: got %d dims, want %d", len(e.Values), EmbeddingDim)
 		}
 		v := make([]float32, len(e.Values))
 		for j, x := range e.Values {
@@ -214,6 +219,46 @@ func (g *geminiEmbedder) doEmbed(ctx context.Context, payload []byte) ([][]float
 		out[i] = v
 	}
 	return out, -1, nil
+}
+
+func (g *geminiEmbedder) errf(format string, args ...any) error {
+	return errors.New(redactSecrets(fmt.Sprintf(format, args...), g.apiKey))
+}
+
+func (g *geminiEmbedder) httpErr(status int, body []byte) error {
+	reason := parseGeminiError(body)
+	if reason == "" {
+		return g.errf("gemini embedding: HTTP %d", status)
+	}
+	return g.errf("gemini embedding: HTTP %d: %s", status, reason)
+}
+
+func parseGeminiError(body []byte) string {
+	var parsed struct {
+		Error struct {
+			Message string `json:"message"`
+			Status  string `json:"status"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		s := strings.Join(strings.Fields(string(body)), " ")
+		if len(s) > 300 {
+			s = s[:300]
+		}
+		return s
+	}
+	msg := strings.TrimSpace(parsed.Error.Message)
+	st := strings.TrimSpace(parsed.Error.Status)
+	switch {
+	case st != "" && msg != "":
+		return st + ": " + msg
+	case msg != "":
+		return msg
+	case st != "":
+		return st
+	default:
+		return ""
+	}
 }
 
 func parseRetryAfter(h string) time.Duration {

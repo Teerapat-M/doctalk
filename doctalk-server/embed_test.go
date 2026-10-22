@@ -123,6 +123,66 @@ func TestRedactErr(t *testing.T) {
 	}
 }
 
+func TestRedactSecretsStripsKeyAndQuery(t *testing.T) {
+	const key = "sk-live-abc123"
+	in := "HTTP 400: INVALID_ARGUMENT: bad key sk-live-abc123 see https://generativelanguage.googleapis.com/v1beta/models/x:embedContent?key=sk-live-abc123&alt=json and extra https://x.test/v?foo=1&key=other-secret-value#frag"
+	got := redactSecrets(in, key)
+	if strings.Contains(got, key) {
+		t.Fatalf("configured key leaked: %q", got)
+	}
+	if strings.Contains(got, "other-secret-value") {
+		t.Fatalf("?key= query value leaked: %q", got)
+	}
+	if !strings.Contains(got, "?key=[redacted]") {
+		t.Fatalf("expected ?key=[redacted] in %q", got)
+	}
+	if !strings.Contains(got, "&key=[redacted]") {
+		t.Fatalf("expected &key=[redacted] in %q", got)
+	}
+	if !strings.Contains(got, "INVALID_ARGUMENT") || !strings.Contains(got, "HTTP 400") {
+		t.Fatalf("lost status/message: %q", got)
+	}
+}
+
+func TestGeminiEmbedIncludesStatusAndMessage(t *testing.T) {
+	const secret = "cfg-secret-key"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":400,"message":"API key not valid. docs at https://ai.google.dev/?key=` + secret + `","status":"INVALID_ARGUMENT"}}`))
+	}))
+	defer srv.Close()
+
+	g := &geminiEmbedder{
+		apiKey:     secret,
+		model:      defaultEmbedModel,
+		baseURL:    srv.URL,
+		http:       srv.Client(),
+		batchSize:  8,
+		maxRetries: 1,
+		sleep:      func(context.Context, time.Duration) error { return nil },
+	}
+	_, err := g.Embed(context.Background(), []string{"hello"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "HTTP 400") {
+		t.Fatalf("missing status code: %s", msg)
+	}
+	if !strings.Contains(msg, "INVALID_ARGUMENT") {
+		t.Fatalf("missing Gemini status: %s", msg)
+	}
+	if !strings.Contains(msg, "API key not valid") {
+		t.Fatalf("missing Gemini message: %s", msg)
+	}
+	if strings.Contains(msg, secret) {
+		t.Fatalf("key leaked: %s", msg)
+	}
+	if strings.Contains(strings.ToLower(msg), "?key="+secret) {
+		t.Fatalf("key query leaked: %s", msg)
+	}
+}
+
 type errString string
 
 func (e errString) Error() string { return string(e) }

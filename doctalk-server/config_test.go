@@ -19,6 +19,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("GEMINI_EMBEDDING_MODEL", "")
 	t.Setenv("MAX_UPLOAD_BYTES", "")
 	t.Setenv("STORAGE_DIR", "")
+	t.Setenv("GEMINI_BASE_URL", "")
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -37,6 +38,21 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.StorageDir != defaultStorageDir {
 		t.Fatalf("StorageDir = %q", cfg.StorageDir)
+	}
+	if cfg.GeminiBaseURL != defaultGeminiBaseURL {
+		t.Fatalf("GeminiBaseURL = %q", cfg.GeminiBaseURL)
+	}
+}
+
+func TestLoadConfigGeminiBaseURL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("GEMINI_BASE_URL", "https://example.invalid/gemini/")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GeminiBaseURL != "https://example.invalid/gemini" {
+		t.Fatalf("GeminiBaseURL = %q", cfg.GeminiBaseURL)
 	}
 }
 

@@ -25,7 +25,9 @@ services:
       API_PORT: "8081"
       DATABASE_URL: postgres://doctalk:doctalk@db:5432/doctalk?sslmode=disable
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5174}
+      GIN_MODE: release
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_BASE_URL: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com}
       GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-001}
       STORAGE_DIR: /data/uploads
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-10485760}
