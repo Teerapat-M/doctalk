@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: doctalk-server
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: doctalk
+          POSTGRES_PASSWORD: doctalk
+          POSTGRES_DB: doctalk
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U doctalk -d doctalk"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://doctalk:doctalk@localhost:5432/doctalk?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: doctalk-server/go.sum
+      - name: Test
+        run: go test ./...
+      - name: Build
+        run: go build -o doctalk-server .
+      - name: Docker build
+        working-directory: .
+        run: docker build -t doctalk-server ./doctalk-server
+
+  client:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: doctalk-client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: doctalk-client/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
