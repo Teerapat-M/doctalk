@@ -175,7 +175,8 @@ func (s *server) loadQuizChunks(ctx context.Context, docIDs, chunkIDs []string, 
 	}
 	q := `
 		SELECT c.id::text, c.document_id::text, c.page_number, c.sheet_name, c.row_number,
-		       c.content, c.question, c.answer, c.explanation, c.embedding::text
+		       c.content, c.question, c.answer, c.explanation, c.embedding::text,
+		       c.choice_a, c.choice_b, c.choice_c, c.choice_d
 		FROM chunks c
 		WHERE c.document_id = ANY($1::uuid[])
 		  AND c.embedding IS NOT NULL
@@ -200,7 +201,7 @@ func (s *server) loadQuizChunks(ctx context.Context, docIDs, chunkIDs []string, 
 	for rows.Next() {
 		var ch retrievedChunk
 		var emb string
-		if err := rows.Scan(&ch.ID, &ch.DocumentID, &ch.PageNumber, &ch.SheetName, &ch.RowNumber, &ch.Content, &ch.Question, &ch.Answer, &ch.Explanation, &emb); err != nil {
+		if err := rows.Scan(&ch.ID, &ch.DocumentID, &ch.PageNumber, &ch.SheetName, &ch.RowNumber, &ch.Content, &ch.Question, &ch.Answer, &ch.Explanation, &emb, &ch.ChoiceA, &ch.ChoiceB, &ch.ChoiceC, &ch.ChoiceD); err != nil {
 			return nil, err
 		}
 		ch.Embedding = parseVectorLiteral(emb)
@@ -233,31 +234,112 @@ func assembleQuizFromColumns(ctx context.Context, chunks []retrievedChunk, n int
 	rand.Shuffle(len(qa), func(i, j int) { qa[i], qa[j] = qa[j], qa[i] })
 	selected := qa[:n]
 
-	extras := loadGeminiDistractors(ctx, quiz, selected)
+	_, rest := splitMappedChoiceRows(selected)
+	extras := loadGeminiDistractors(ctx, quiz, rest)
 	out := make([]quizQuestionJSON, 0, n)
 	for _, ch := range selected {
-		correct := strings.TrimSpace(ch.Answer)
-		distractors := extras[strings.TrimSpace(ch.Question)]
-		if len(distractors) < 3 {
-			distractors = pickDistractors(qa, ch, 3)
+		q, err := questionFromColumnRow(ch, qa, extras)
+		if err != nil {
+			return nil, err
 		}
-		if len(distractors) < 3 {
-			return nil, fmt.Errorf("need at least 4 distinct answers to build options from columns")
+		out = append(out, q)
+	}
+	return out, nil
+}
+
+func splitMappedChoiceRows(rows []retrievedChunk) (mapped, rest []retrievedChunk) {
+	for _, ch := range rows {
+		if mappedChoices(ch) != nil {
+			mapped = append(mapped, ch)
+		} else {
+			rest = append(rest, ch)
 		}
-		opts, letter := shuffleOptions(correct, distractors[:3])
-		expl := strings.TrimSpace(ch.Explanation)
+	}
+	return mapped, rest
+}
+
+func mappedChoices(ch retrievedChunk) *quizOptionMap {
+	opts := quizOptionMap{
+		A: strings.TrimSpace(ch.ChoiceA),
+		B: strings.TrimSpace(ch.ChoiceB),
+		C: strings.TrimSpace(ch.ChoiceC),
+		D: strings.TrimSpace(ch.ChoiceD),
+	}
+	if opts.A == "" || opts.B == "" || opts.C == "" || opts.D == "" {
+		return nil
+	}
+	return &opts
+}
+
+func questionFromColumnRow(ch retrievedChunk, pool []retrievedChunk, extras map[string][]string) (quizQuestionJSON, error) {
+	expl := strings.TrimSpace(ch.Explanation)
+	if opts := mappedChoices(ch); opts != nil {
+		letter, err := correctLetterFromRow(ch, *opts)
+		if err != nil {
+			return quizQuestionJSON{}, err
+		}
 		if expl == "" {
-			expl = correct
+			expl = optionText(*opts, letter)
 		}
-		out = append(out, quizQuestionJSON{
+		return quizQuestionJSON{
 			Prompt:      strings.TrimSpace(ch.Question),
-			Options:     opts,
+			Options:     *opts,
 			Correct:     letter,
 			Explanation: expl,
 			Citation:    citationFromChunk(ch),
-		})
+		}, nil
 	}
-	return out, nil
+	correct := strings.TrimSpace(ch.Answer)
+	distractors := extras[strings.TrimSpace(ch.Question)]
+	if len(distractors) < 3 {
+		distractors = pickDistractors(pool, ch, 3)
+	}
+	if len(distractors) < 3 {
+		return quizQuestionJSON{}, fmt.Errorf("need at least 4 distinct answers to build options from columns")
+	}
+	opts, letter := shuffleOptions(correct, distractors[:3])
+	if expl == "" {
+		expl = correct
+	}
+	return quizQuestionJSON{
+		Prompt:      strings.TrimSpace(ch.Question),
+		Options:     opts,
+		Correct:     letter,
+		Explanation: expl,
+		Citation:    citationFromChunk(ch),
+	}, nil
+}
+
+func optionText(opts quizOptionMap, letter string) string {
+	switch letter {
+	case "A":
+		return opts.A
+	case "B":
+		return opts.B
+	case "C":
+		return opts.C
+	case "D":
+		return opts.D
+	default:
+		return ""
+	}
+}
+
+func correctLetterFromRow(ch retrievedChunk, opts quizOptionMap) (string, error) {
+	ans := strings.TrimSpace(ch.Answer)
+	up := strings.ToUpper(ans)
+	if up == "A" || up == "B" || up == "C" || up == "D" {
+		if optionText(opts, up) != "" {
+			return up, nil
+		}
+	}
+	want := strings.ToLower(ans)
+	for _, letter := range []string{"A", "B", "C", "D"} {
+		if strings.ToLower(optionText(opts, letter)) == want && want != "" {
+			return letter, nil
+		}
+	}
+	return "", fmt.Errorf("answer %q does not match mapped choices", ans)
 }
 
 func pickDistractors(pool []retrievedChunk, correct retrievedChunk, n int) []string {

@@ -24,10 +24,11 @@ func (s stubExtract) ExtractPages([]byte) ([]pageText, error) {
 }
 
 type fakeEmbedder struct {
-	dim   int
-	err   error
-	calls int
-	query []float32
+	dim        int
+	err        error
+	calls      int
+	queryCalls int
+	query      []float32
 }
 
 func (f *fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
@@ -50,6 +51,7 @@ func (f *fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, er
 }
 
 func (f *fakeEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	f.queryCalls++
 	if len(f.query) > 0 {
 		if f.err != nil {
 			return nil, f.err

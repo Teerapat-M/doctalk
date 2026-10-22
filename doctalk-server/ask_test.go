@@ -286,6 +286,52 @@ func TestAskRejectsTrailingJSONJunk(t *testing.T) {
 	}
 }
 
+func TestUseFullTable(t *testing.T) {
+	if !useFullTable(kindXLSX, 3, 50) || useFullTable(kindPDF, 3, 50) || useFullTable(kindXLSX, 80, 50) || useFullTable(kindXLSX, 3, 0) {
+		t.Fatal("useFullTable bounds")
+	}
+}
+
+func TestAskSmallXlsxUsesFullTable(t *testing.T) {
+	db := openTestDB(t)
+	id := insertDoneDoc(t, db, "sales.xlsx")
+	if _, err := db.Exec(`UPDATE documents SET source_kind='xlsx', page_count=3 WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	insertSheetChunk(t, db, id, 0, "Sales", 2, "Sheet: Sales; Region: North; Revenue: 100", "", "", "", unitVec(0))
+	insertSheetChunk(t, db, id, 1, "Sales", 3, "Sheet: Sales; Region: East; Revenue: 80", "", "", "", unitVec(1))
+	insertSheetChunk(t, db, id, 2, "Sales", 4, "Sheet: Sales; Region: South; Revenue: 250", "", "", "", unitVec(2))
+	embed := &fakeEmbedder{query: unitVec(0)}
+	chat := &fakeChat{deltas: []string{"FOUND\nSouth"}}
+	s := &server{
+		db:    db,
+		cfg:   config{CORSOrigin: "*", AskTopK: 1, AskTopKMax: 20, AskTimeout: time.Minute, XLSXFullTableMaxRows: 50},
+		embed: embed,
+		chat:  chat,
+	}
+	r := newRouter(s)
+	payload, _ := json.Marshal(askRequest{Question: "Which region has the highest revenue?", DocumentIDs: []string{id}, K: intPtr(1)})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if embed.queryCalls != 0 {
+		t.Fatalf("query embed should be skipped for a small table, calls=%d", embed.queryCalls)
+	}
+	if len(chat.gotChunks) != 3 {
+		t.Fatalf("chunks=%d %+v", len(chat.gotChunks), chat.gotChunks)
+	}
+	joined := ""
+	for _, ch := range chat.gotChunks {
+		joined += ch.Content
+	}
+	if !strings.Contains(joined, "South") || !strings.Contains(joined, "250") {
+		t.Fatalf("full table missing South: %q", joined)
+	}
+}
+
+func intPtr(n int) *int { return &n }
+
 func TestAskEmptyRetrievalStreamsNotFound(t *testing.T) {
 	db := openTestDB(t)
 	id := insertDoneDoc(t, db, "empty-chunks.pdf")

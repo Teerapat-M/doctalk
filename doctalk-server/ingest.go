@@ -161,6 +161,10 @@ func (s *server) processSpreadsheet(ctx context.Context, id, key, kind, sheet st
 			Question:    row.Question,
 			Answer:      row.Answer,
 			Explanation: row.Explanation,
+			ChoiceA:     row.ChoiceA,
+			ChoiceB:     row.ChoiceB,
+			ChoiceC:     row.ChoiceC,
+			ChoiceD:     row.ChoiceD,
 		}
 		texts[i] = row.Content
 	}
@@ -196,9 +200,9 @@ func (s *server) replaceChunks(ctx context.Context, id string, chunks []Chunk, v
 			return fmt.Errorf("embed: vector dim %d, want %d", len(vecs[i]), EmbeddingDim)
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO chunks (document_id, chunk_index, page_number, content, embedding, sheet_name, row_number, question, answer, explanation)
-			VALUES ($1, $2, $3, $4, $5::vector, $6, $7, $8, $9, $10)
-		`, id, ch.Index, ch.Page, ch.Text, vectorLiteral(vecs[i]), ch.SheetName, ch.RowNumber, ch.Question, ch.Answer, ch.Explanation); err != nil {
+			INSERT INTO chunks (document_id, chunk_index, page_number, content, embedding, sheet_name, row_number, question, answer, explanation, choice_a, choice_b, choice_c, choice_d)
+			VALUES ($1, $2, $3, $4, $5::vector, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		`, id, ch.Index, ch.Page, ch.Text, vectorLiteral(vecs[i]), ch.SheetName, ch.RowNumber, ch.Question, ch.Answer, ch.Explanation, ch.ChoiceA, ch.ChoiceB, ch.ChoiceC, ch.ChoiceD); err != nil {
 			return fmt.Errorf("store chunks: %w", err)
 		}
 	}

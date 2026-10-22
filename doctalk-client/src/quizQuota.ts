@@ -30,3 +30,12 @@ export function quizQuotaReached(quota: QuotaResponse | null): boolean {
   const quiz = quota?.quiz;
   return !!quiz && quiz.limit > 0 && quiz.remaining <= 0;
 }
+
+export function formatQuotaLabel(quota: QuotaResponse | null): string {
+  if (!quota) return "";
+  const ask = quota.ask;
+  const quiz = quota.quiz;
+  const askPart = ask ? `Ask ${ask.remaining}/${ask.limit}` : "";
+  const quizPart = quiz ? `Quiz ${quiz.remaining}/${quiz.limit}` : "";
+  return [askPart, quizPart].filter(Boolean).join(" · ");
+}

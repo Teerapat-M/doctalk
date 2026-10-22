@@ -1,6 +1,14 @@
 import type { ColumnMap, SheetInfo } from "./documents";
 
-export type ColumnRole = "question" | "answer" | "explanation" | "ignore";
+export type ColumnRole =
+  | "question"
+  | "answer"
+  | "explanation"
+  | "choice_a"
+  | "choice_b"
+  | "choice_c"
+  | "choice_d"
+  | "ignore";
 
 export type ColumnPickerState = {
   sheet: string;
@@ -12,6 +20,21 @@ const answerNames = ["answer", "คำตอบ"];
 const explanationNames = ["explanation", "คำอธิบาย"];
 const contentNames = ["content", "เนื้อหา"];
 
+const choiceAliases: Record<string, ColumnRole> = {
+  a: "choice_a",
+  choice_a: "choice_a",
+  option_a: "choice_a",
+  b: "choice_b",
+  choice_b: "choice_b",
+  option_b: "choice_b",
+  c: "choice_c",
+  choice_c: "choice_c",
+  option_c: "choice_c",
+  d: "choice_d",
+  choice_d: "choice_d",
+  option_d: "choice_d",
+};
+
 export function pickHeader(headers: string[], names: string[]): string {
   const lower = names.map((n) => n.toLowerCase());
   return headers.find((h) => lower.includes(h.toLowerCase())) ?? headers[0] ?? "";
@@ -21,12 +44,16 @@ export function sheetHeaders(sheets: SheetInfo[] | undefined, sheet: string): st
   return sheets?.find((s) => s.name === sheet)?.headers ?? [];
 }
 
+function normalizeHeader(header: string): string {
+  return header.trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
 export function defaultRole(header: string): ColumnRole {
-  const h = header.toLowerCase();
+  const h = normalizeHeader(header);
   if (questionNames.includes(h)) return "question";
   if (answerNames.includes(h)) return "answer";
   if (explanationNames.includes(h)) return "explanation";
-  return "ignore";
+  return choiceAliases[h] ?? "ignore";
 }
 
 export function excelColLetter(index: number): string {
@@ -70,6 +97,10 @@ export function buildColumnMap(state: ColumnPickerState, headers: string[]): Col
     if (role === "question") columns.question = h;
     if (role === "answer") columns.answer = h;
     if (role === "explanation") columns.explanation = h;
+    if (role === "choice_a") columns.choice_a = h;
+    if (role === "choice_b") columns.choice_b = h;
+    if (role === "choice_c") columns.choice_c = h;
+    if (role === "choice_d") columns.choice_d = h;
   }
   if (columns.question && !columns.answer && contentNames.includes(columns.question.toLowerCase())) {
     return { content: columns.question };

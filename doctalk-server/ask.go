@@ -53,6 +53,10 @@ type retrievedChunk struct {
 	Question    string
 	Answer      string
 	Explanation string
+	ChoiceA     string
+	ChoiceB     string
+	ChoiceC     string
+	ChoiceD     string
 	Embedding   []float32
 }
 
@@ -153,17 +157,7 @@ func (s *server) ask(c *gin.Context) {
 		s.writeAskErrLocked(c, true, err, &sseMu)
 	}
 
-	qvec, err := s.embed.EmbedQuery(ctx, question)
-	if err != nil {
-		fail(err)
-		return
-	}
-	if len(qvec) != EmbeddingDim {
-		fail(errors.New("gemini embedding: unexpected dimension"))
-		return
-	}
-
-	chunks, err := s.retrieve(ctx, docIDs, qvec, k)
+	chunks, err := s.loadAskChunks(ctx, docIDs, question, k)
 	if err != nil {
 		fail(err)
 		return
@@ -345,13 +339,112 @@ func (s *server) ensureAskDocs(ctx context.Context, ids []string, guest string) 
 	return nil
 }
 
+func useFullTable(kind string, rowCount, maxRows int) bool {
+	if maxRows < 1 {
+		return false
+	}
+	if kind != kindXLSX && kind != kindCSV {
+		return false
+	}
+	return rowCount > 0 && rowCount <= maxRows
+}
+
+func (s *server) loadAskChunks(ctx context.Context, docIDs []string, question string, k int) ([]retrievedChunk, error) {
+	fullIDs, vectorIDs, err := s.partitionAskDocs(ctx, docIDs)
+	if err != nil {
+		return nil, err
+	}
+	var out []retrievedChunk
+	if len(fullIDs) > 0 {
+		rows, err := s.loadAllChunks(ctx, fullIDs)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rows...)
+	}
+	if len(vectorIDs) == 0 {
+		return out, nil
+	}
+	qvec, err := s.embed.EmbedQuery(ctx, question)
+	if err != nil {
+		return nil, err
+	}
+	if len(qvec) != EmbeddingDim {
+		return nil, errors.New("gemini embedding: unexpected dimension")
+	}
+	rows, err := s.retrieve(ctx, vectorIDs, qvec, k)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, rows...), nil
+}
+
+func (s *server) partitionAskDocs(ctx context.Context, docIDs []string) (fullIDs, vectorIDs []string, err error) {
+	maxRows := s.cfg.XLSXFullTableMaxRows
+	q := `SELECT id::text, source_kind, COALESCE(page_count, 0) FROM documents WHERE id = ANY($1::uuid[])`
+	rows, err := s.db.QueryContext(ctx, q, "{"+strings.Join(docIDs, ",")+"}")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	seen := map[string]struct{}{}
+	for rows.Next() {
+		var id, kind string
+		var rowCount int
+		if err := rows.Scan(&id, &kind, &rowCount); err != nil {
+			return nil, nil, err
+		}
+		seen[id] = struct{}{}
+		if useFullTable(kind, rowCount, maxRows) {
+			fullIDs = append(fullIDs, id)
+		} else {
+			vectorIDs = append(vectorIDs, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	for _, id := range docIDs {
+		if _, ok := seen[id]; !ok {
+			vectorIDs = append(vectorIDs, id)
+		}
+	}
+	return fullIDs, vectorIDs, nil
+}
+
+func (s *server) loadAllChunks(ctx context.Context, docIDs []string) ([]retrievedChunk, error) {
+	q := `
+		SELECT c.id::text, c.document_id::text, c.page_number, c.sheet_name, c.row_number,
+		       c.content, c.question, c.answer, c.explanation,
+		       c.choice_a, c.choice_b, c.choice_c, c.choice_d
+		FROM chunks c
+		WHERE c.document_id = ANY($1::uuid[])
+		ORDER BY c.document_id, c.row_number, c.chunk_index
+	`
+	rows, err := s.db.QueryContext(ctx, q, "{"+strings.Join(docIDs, ",")+"}")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]retrievedChunk, 0)
+	for rows.Next() {
+		var ch retrievedChunk
+		if err := rows.Scan(&ch.ID, &ch.DocumentID, &ch.PageNumber, &ch.SheetName, &ch.RowNumber, &ch.Content, &ch.Question, &ch.Answer, &ch.Explanation, &ch.ChoiceA, &ch.ChoiceB, &ch.ChoiceC, &ch.ChoiceD); err != nil {
+			return nil, err
+		}
+		out = append(out, ch)
+	}
+	return out, rows.Err()
+}
+
 func (s *server) retrieve(ctx context.Context, docIDs []string, query []float32, k int) ([]retrievedChunk, error) {
 	if k < 1 {
 		k = 1
 	}
 	q := `
 		SELECT c.id::text, c.document_id::text, c.page_number, c.sheet_name, c.row_number,
-		       c.content, c.question, c.answer, c.explanation
+		       c.content, c.question, c.answer, c.explanation,
+		       c.choice_a, c.choice_b, c.choice_c, c.choice_d
 		FROM chunks c
 		JOIN documents d ON d.id = c.document_id
 		WHERE c.document_id = ANY($1::uuid[])
@@ -369,7 +462,7 @@ func (s *server) retrieve(ctx context.Context, docIDs []string, query []float32,
 	out := make([]retrievedChunk, 0, k)
 	for rows.Next() {
 		var ch retrievedChunk
-		if err := rows.Scan(&ch.ID, &ch.DocumentID, &ch.PageNumber, &ch.SheetName, &ch.RowNumber, &ch.Content, &ch.Question, &ch.Answer, &ch.Explanation); err != nil {
+		if err := rows.Scan(&ch.ID, &ch.DocumentID, &ch.PageNumber, &ch.SheetName, &ch.RowNumber, &ch.Content, &ch.Question, &ch.Answer, &ch.Explanation, &ch.ChoiceA, &ch.ChoiceB, &ch.ChoiceC, &ch.ChoiceD); err != nil {
 			return nil, err
 		}
 		out = append(out, ch)

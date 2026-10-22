@@ -24,6 +24,10 @@ export type ColumnMap = {
   question?: string;
   answer?: string;
   explanation?: string;
+  choice_a?: string;
+  choice_b?: string;
+  choice_c?: string;
+  choice_d?: string;
 };
 
 export function documentsUrl(baseUrl: string, id?: string): string {

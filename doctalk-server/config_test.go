@@ -31,6 +31,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("ASK_TOP_K", "")
 	t.Setenv("ASK_TOP_K_MAX", "")
 	t.Setenv("ASK_TIMEOUT_SECONDS", "")
+	t.Setenv("XLSX_FULL_TABLE_MAX_ROWS", "")
 	t.Setenv("GEMINI_QUIZ_MODEL", "")
 	t.Setenv("QUIZ_N_MAX", "")
 	t.Setenv("GEMINI_CHAT_FALLBACK_MODEL", "")
@@ -87,6 +88,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.AskTimeout != time.Duration(defaultAskTimeoutSec)*time.Second {
 		t.Fatalf("AskTimeout=%s", cfg.AskTimeout)
+	}
+	if cfg.XLSXFullTableMaxRows != defaultXLSXFullTableMaxRows {
+		t.Fatalf("full table rows=%d", cfg.XLSXFullTableMaxRows)
 	}
 	if cfg.GeminiQuizModel != cfg.GeminiChatModel {
 		t.Fatalf("GeminiQuizModel=%q want chat default", cfg.GeminiQuizModel)
@@ -363,6 +367,21 @@ func TestLoadConfigFallbackAliasAndBounds(t *testing.T) {
 	}
 	if cfg.GeminiFallbackModel != "gemini-2.5-flash-lite" {
 		t.Fatalf("GEMINI_FALLBACK_MODEL should win, got %q", cfg.GeminiFallbackModel)
+	}
+}
+
+func TestLoadConfigAskTimeoutInvalidFailsFast(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	for _, v := range []string{"abc", "0"} {
+		t.Setenv("ASK_TIMEOUT_SECONDS", v)
+		_, err := loadConfig()
+		if err == nil {
+			t.Fatalf("expected error for ASK_TIMEOUT_SECONDS=%q", v)
+		}
+		if !strings.Contains(err.Error(), "ASK_TIMEOUT_SECONDS") {
+			t.Fatalf("ASK_TIMEOUT_SECONDS=%q got %v", v, err)
+		}
 	}
 }
 
