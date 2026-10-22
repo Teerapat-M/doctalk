@@ -31,6 +31,17 @@ func TestDetectKindSniffsMagicNotFilename(t *testing.T) {
 	if isXLSX(docx) {
 		t.Fatal("docx must not sniff as xlsx")
 	}
+	xlsm := zipWithFiles(t, map[string]string{
+		"[Content_Types].xml": "<Types/>",
+		"xl/workbook.xml":     "<workbook/>",
+		"xl/vbaProject.bin":   "macro",
+	})
+	if !hasVBAProject(xlsm) {
+		t.Fatal("expected vba project")
+	}
+	if isXLSX(xlsm) {
+		t.Fatal("macro-enabled xlsx must not sniff as xlsx")
+	}
 	csv := []byte("question,answer\nก,ข\n")
 	if got := detectKind(csv, "quiz.csv"); got != kindCSV {
 		t.Fatalf("csv: %q", got)

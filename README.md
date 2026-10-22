@@ -65,11 +65,11 @@ Errors keep Gemini's status and message with the API key stripped (including `?k
 
 ## Phase 3.5 — Excel import and quiz
 
-This PR depends on Phase 3 ([PR #4](https://github.com/Teerapat-M/doctalk/pull/4); still unmerged) and the Phase 2 follow-ups ([PR #3](https://github.com/Teerapat-M/doctalk/pull/3)).
+Phases 1–3.5 landed in [PR #1](https://github.com/Teerapat-M/doctalk/pull/1)–[#5](https://github.com/Teerapat-M/doctalk/pull/5). This follow-up ([PR #6](https://github.com/Teerapat-M/doctalk/pull/6)) is QA on that stack.
 
 ### Excel / CSV ingest
 
-`POST /documents` accepts `.xlsx` (ZIP `PK` magic plus `xl/` and `[Content_Types].xml`) and `.csv` (filename ends with `.csv`, UTF-8, no NUL). Size uses the same `MAX_UPLOAD_BYTES` cap as PDFs.
+`POST /documents` accepts `.xlsx` (ZIP `PK` magic plus `xl/` and `[Content_Types].xml`) and `.csv` (filename ends with `.csv`, UTF-8, no NUL). Macro-enabled workbooks (`xl/vbaProject.bin`) are **400**. Size uses the same `MAX_UPLOAD_BYTES` cap as PDFs.
 
 Spreadsheet uploads return **202** with `status: "mapping"` and the workbook's sheets/headers. Processing does **not** start until the user maps columns:
 
@@ -87,7 +87,7 @@ Content-Type: application/json
 }
 ```
 
-`Content-Type` must be `application/json` (**415** otherwise). Trailing junk after the JSON object is **400**. A malformed document id is **400**; an unknown id is **404**.
+`Content-Type` must be `application/json` (**415** otherwise; compared case-insensitively, charset allowed). Trailing junk after the JSON object (including extra `}` or `]`) is **400**. A malformed document id is **400**; an unknown id is **404**. An unknown sheet or column is a synchronous **400**, not 202 then a later `failed` status.
 
 Map **exactly one** of `columns.content` or `columns.question`. `answer` and `explanation` are optional. Each data row becomes a chunk with `sheet_name` and `row_number` (1-based, including the header row as 1) in place of `page_number`, embedded the same way as PDF chunks (`gemini-embedding-001` @ 768). `from_columns` quiz mode needs question **and** answer columns.
 
@@ -121,7 +121,7 @@ Content-Type: application/json
 }
 ```
 
-- `n` is user-chosen, default 5, capped by `QUIZ_N_MAX` (default 20, hard max 50). Values above the cap are **400**.
+- `n` is optional. If omitted, the server uses 5. If present, it must be an integer from 1 through `QUIZ_N_MAX` (default 20, hard max 50); `0`, negatives, and values above the cap are **400**.
 - `mode` is `generate` (default) or `from_columns`.
 - `document_ids` must be UUIDs (**400** if malformed, **404** if unknown). `Content-Type` must be `application/json` (**415** otherwise). Trailing junk is **400**.
 - `generate` calls Gemini `generateContent` with `responseMimeType: application/json` and a `responseSchema`, then validates server-side and retries **once** on invalid JSON.
@@ -156,16 +156,17 @@ Thai has no spaces between words. DocTalk does **not** use a dictionary segmente
 
 ## Local ports
 
-Defaults avoid collisions with 5433 / 5173 / 8080 and with 8081 / 5174 on the owner's PC:
+Defaults avoid collisions with 5433 / 5173 / 8080 and with 8081 / 5174 / 5191 on the owner's PC:
 
 | Service | Env | Default |
 | --- | --- | --- |
 | Postgres (host) | `DB_PORT` | 5435 |
 | API | `API_PORT` (then `PORT`) | 8181 |
-| Vite | `VITE_PORT` | 5191 (bound to `127.0.0.1`) |
-| Browser → API | `VITE_API_URL` | http://localhost:8181 |
+| Vite | `VITE_PORT` | 4317 (bound to `127.0.0.1`, `strictPort`) |
+| Browser → API | `VITE_API_URL` | unset (Vite proxies `/health`, `/documents`, `/ask`, `/quiz`) |
+| CORS | `CORS_ORIGIN` | `http://localhost:4317,http://127.0.0.1:4317` |
 
-Inside docker-compose, Postgres is still 5432 on the private network. `DB_PORT` / `API_PORT` only change the **host** bindings. The server prefers `API_PORT`, then `PORT` (Render), then 8181.
+Inside docker-compose, Postgres is still 5432 on the private network. `DB_PORT` / `API_PORT` only change the **host** bindings. The server prefers `API_PORT`, then `PORT` (Render), then 8181. If Vite's port is taken, it exits with a message to set `VITE_PORT`.
 
 ## Setup
 
@@ -194,7 +195,7 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    ```
    set DATABASE_URL=postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable
    set API_PORT=8181
-   set CORS_ORIGIN=http://localhost:5191
+   set CORS_ORIGIN=http://localhost:4317,http://127.0.0.1:4317
    set GEMINI_API_KEY=your-free-tier-key
    set GEMINI_BASE_URL=https://generativelanguage.googleapis.com
    set GEMINI_CHAT_MODEL=gemini-3.8-flash
@@ -207,7 +208,7 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    ```
    export DATABASE_URL=postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable
    export API_PORT=8181
-   export CORS_ORIGIN=http://localhost:5191
+   export CORS_ORIGIN=http://localhost:4317,http://127.0.0.1:4317
    export GEMINI_API_KEY=your-free-tier-key
    export GEMINI_BASE_URL=https://generativelanguage.googleapis.com
    export GEMINI_CHAT_MODEL=gemini-3.8-flash
@@ -225,7 +226,7 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    npm run dev
    ```
 
-   Vite listens on `VITE_PORT` (5191) and proxies `/health`, `/documents`, `/ask`, and `/quiz` to `VITE_API_URL`.
+   Vite listens on `VITE_PORT` (4317) at `127.0.0.1` and proxies `/health`, `/documents`, `/ask`, and `/quiz` to the API. Leave `VITE_API_URL` unset so the browser talks to Vite (same origin) instead of calling `localhost` while Vite prints `http://127.0.0.1:4317`. `CORS_ORIGIN` still allows both hostnames if the client is pointed at the API directly.
 
 Use the Gemini **free tier**. Do not put the key in git or CI.
 
@@ -331,7 +332,7 @@ CI runs both, with a `pgvector/pgvector:pg16` service for the server job. Gemini
 - **Phase 1:** health, migrations, local Postgres, CI. (done)
 - **Phase 2:** PDF upload, text extraction, Thai-aware chunking, embedding.
 - **Phase 3:** ask endpoint with top-k retrieval, Gemini answers with citations, SSE streaming.
-- **Phase 3.5:** Excel/CSV ingest, quiz generation, quiz UI. (this PR)
+- **Phase 3.5:** Excel/CSV ingest, quiz generation, quiz UI. (done; this PR is QA)
 - **Phase 4:** chat UI.
 - **Phase 5:** guest auth and rate limiting.
 - **Phase 6:** deploy (Render server, Vercel client, Supabase Postgres, all free tiers).

@@ -35,9 +35,27 @@ func newRouter(s *server) *gin.Engine {
 	return r
 }
 
-func cors(origin string) gin.HandlerFunc {
+func cors(originCSV string) gin.HandlerFunc {
+	origins := splitCSV(originCSV)
+	wildcard := false
+	allow := make(map[string]struct{}, len(origins))
+	for _, o := range origins {
+		if o == "*" {
+			wildcard = true
+		}
+		allow[o] = struct{}{}
+	}
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", origin)
+		reqOrigin := c.GetHeader("Origin")
+		switch {
+		case wildcard:
+			c.Header("Access-Control-Allow-Origin", "*")
+		case reqOrigin != "":
+			if _, ok := allow[reqOrigin]; ok {
+				c.Header("Access-Control-Allow-Origin", reqOrigin)
+				c.Header("Vary", "Origin")
+			}
+		}
 		c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if c.Request.Method == http.MethodOptions {

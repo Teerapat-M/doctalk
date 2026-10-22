@@ -39,6 +39,29 @@ func TestHealthOKWhenDBPings(t *testing.T) {
 	}
 }
 
+func TestCORSAllowsLocalhostAndLoopback(t *testing.T) {
+	r := newRouter(&server{ping: fakePinger{}, cfg: config{CORSOrigin: defaultCORSOrigin}})
+	for _, origin := range []string{"http://localhost:4317", "http://127.0.0.1:4317"} {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodOptions, "/health", nil)
+		req.Header.Set("Origin", origin)
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("origin=%s status=%d", origin, w.Code)
+		}
+		if got := w.Header().Get("Access-Control-Allow-Origin"); got != origin {
+			t.Fatalf("origin=%s allow=%q", origin, got)
+		}
+	}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/health", nil)
+	req.Header.Set("Origin", "http://evil.example")
+	r.ServeHTTP(w, req)
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("unexpected allow=%q", got)
+	}
+}
+
 func TestHealthUnhealthyWhenDBFails(t *testing.T) {
 	t.Parallel()
 	r := newRouter(&server{ping: fakePinger{err: errors.New("connection refused")}, cfg: config{CORSOrigin: "*"}})

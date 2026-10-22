@@ -118,8 +118,15 @@ func TestQuizCapsNAndRequiresDocs(t *testing.T) {
 	})
 	id := "00000000-0000-0000-0000-000000000001"
 	w := postJSON(r, "/quiz", fmt.Sprintf(`{"document_ids":[%q],"n":99}`, id))
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "capped") {
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "out of range") {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	for _, n := range []int{0, -1} {
+		w = postJSON(r, "/quiz", fmt.Sprintf(`{"document_ids":[%q],"n":%d}`, id, n))
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "out of range") {
+			t.Fatalf("n=%d status=%d body=%s", n, w.Code, w.Body.String())
+		}
 	}
 
 	w = postJSON(r, "/quiz", `{"n":2}`)
@@ -135,7 +142,11 @@ func TestQuizCapsNAndRequiresDocs(t *testing.T) {
 
 func TestQuizRequiresGemini(t *testing.T) {
 	r := newRouter(&server{cfg: config{CORSOrigin: "*"}})
-	w := postJSON(r, "/quiz", `{"document_ids":["00000000-0000-0000-0000-000000000001"],"n":1}`)
+	w := postJSON(r, "/quiz", `{"document_ids":["00000000-0000-0000-0000-000000000001"]}`)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("omitted n status=%d", w.Code)
+	}
+	w = postJSON(r, "/quiz", `{"document_ids":["00000000-0000-0000-0000-000000000001"],"n":1}`)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d", w.Code)
 	}
@@ -155,9 +166,12 @@ func TestQuizAndIngestJSONValidation(t *testing.T) {
 		t.Fatalf("quiz malformed id status=%d body=%s", w.Code, w.Body.String())
 	}
 
-	w = postJSON(r, "/quiz", `{"document_ids":["00000000-0000-0000-0000-000000000001"]} extra`)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("quiz trailing junk status=%d body=%s", w.Code, w.Body.String())
+	base := `{"document_ids":["00000000-0000-0000-0000-000000000001"]}`
+	for _, body := range []string{base + " extra", base + "}", base + "]"} {
+		w = postJSON(r, "/quiz", body)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("quiz trailing %q status=%d body=%s", body, w.Code, w.Body.String())
+		}
 	}
 
 	w = httptest.NewRecorder()
@@ -278,7 +292,8 @@ func TestQuizGenerateAndFromColumnsHTTP(t *testing.T) {
 	}
 	r := newRouter(s)
 
-	payload, _ := json.Marshal(quizRequest{DocumentIDs: []string{id}, N: 2, Mode: "generate"})
+	n := 2
+	payload, _ := json.Marshal(quizRequest{DocumentIDs: []string{id}, N: &n, Mode: "generate"})
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/quiz", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -297,7 +312,8 @@ func TestQuizGenerateAndFromColumnsHTTP(t *testing.T) {
 		t.Fatal("key leaked")
 	}
 
-	payload, _ = json.Marshal(quizRequest{DocumentIDs: []string{id}, N: 4, Mode: "from_columns"})
+	n = 4
+	payload, _ = json.Marshal(quizRequest{DocumentIDs: []string{id}, N: &n, Mode: "from_columns"})
 	w = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/quiz", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -349,6 +365,24 @@ func TestSpreadsheetUploadIngestAndAskCitation(t *testing.T) {
 		t.Fatalf("upload %+v", created)
 	}
 
+	badSheet, _ := json.Marshal(ingestRequest{Sheet: "nope", Columns: columnMap{Question: "คำถาม"}})
+	w = httptest.NewRecorder()
+	ireq := httptest.NewRequest(http.MethodPost, "/documents/"+created.ID+"/ingest", bytes.NewReader(badSheet))
+	ireq.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, ireq)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "unknown sheet") {
+		t.Fatalf("unknown sheet status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	badCol, _ := json.Marshal(ingestRequest{Sheet: "คำถาม", Columns: columnMap{Question: "nope"}})
+	w = httptest.NewRecorder()
+	ireq = httptest.NewRequest(http.MethodPost, "/documents/"+created.ID+"/ingest", bytes.NewReader(badCol))
+	ireq.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, ireq)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "unknown column") {
+		t.Fatalf("unknown column status=%d body=%s", w.Code, w.Body.String())
+	}
+
 	ingestBody, _ := json.Marshal(ingestRequest{
 		Sheet: "คำถาม",
 		Columns: columnMap{
@@ -358,7 +392,7 @@ func TestSpreadsheetUploadIngestAndAskCitation(t *testing.T) {
 		},
 	})
 	w = httptest.NewRecorder()
-	ireq := httptest.NewRequest(http.MethodPost, "/documents/"+created.ID+"/ingest", bytes.NewReader(ingestBody))
+	ireq = httptest.NewRequest(http.MethodPost, "/documents/"+created.ID+"/ingest", bytes.NewReader(ingestBody))
 	ireq.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, ireq)
 	if w.Code != http.StatusAccepted {

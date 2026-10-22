@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"regexp"
 	"strings"
@@ -16,9 +18,13 @@ func validUUID(s string) bool {
 	return uuidRE.MatchString(s)
 }
 
+func isJSONContentType(h string) bool {
+	mt, _, err := mime.ParseMediaType(h)
+	return err == nil && strings.EqualFold(mt, "application/json")
+}
+
 func requireJSONBody(c *gin.Context, dst any) bool {
-	ct := c.ContentType()
-	if ct != "application/json" {
+	if !isJSONContentType(c.GetHeader("Content-Type")) {
 		c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "Content-Type must be application/json"})
 		return false
 	}
@@ -27,7 +33,8 @@ func requireJSONBody(c *gin.Context, dst any) bool {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
 		return false
 	}
-	if dec.More() {
+	var extra struct{}
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
 		return false
 	}
@@ -44,22 +51,26 @@ func invalidDocumentIDs(ids []string) bool {
 }
 
 func parseOptionalK(k *int, def, max int) (int, string) {
+	return parseOptionalBounded(k, def, max, "k")
+}
+
+func parseOptionalBounded(v *int, def, max int, name string) (int, string) {
 	if max < 1 {
 		max = defaultAskTopKMax
 	}
 	if def < 1 {
-		def = defaultAskTopK
+		def = 1
 	}
 	if def > max {
 		def = max
 	}
-	if k == nil {
+	if v == nil {
 		return def, ""
 	}
-	if *k < 1 || *k > max {
-		return 0, "k is out of range"
+	if *v < 1 || *v > max {
+		return 0, name + " is out of range"
 	}
-	return *k, ""
+	return *v, ""
 }
 
 func splitCSV(v string) []string {

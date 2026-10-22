@@ -24,7 +24,7 @@ services:
       PORT: "8181"
       API_PORT: "8181"
       DATABASE_URL: postgres://doctalk:doctalk@db:5432/doctalk?sslmode=disable
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5191}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:4317,http://127.0.0.1:4317}
       GIN_MODE: release
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_BASE_URL: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com}

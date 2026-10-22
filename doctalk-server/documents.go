@@ -74,6 +74,10 @@ func (s *server) uploadDocument(c *gin.Context) {
 		return
 	}
 	filename := filepath.Base(hdr.Filename)
+	if hasVBAProject(data) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "macro-enabled Excel files are not supported"})
+		return
+	}
 	kind := detectKind(data, filename)
 	if kind == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file is not a PDF, XLSX, or CSV"})
