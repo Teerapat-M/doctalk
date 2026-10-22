@@ -83,6 +83,16 @@ func (s *server) ingestDocument(c *gin.Context) {
 		return
 	}
 
+	doc, err := s.loadDocument(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load document"})
+		return
+	}
+	if err := validateIngestMapping(doc.Sheets, req.Sheet, req.Columns); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	mapJSON, _ := json.Marshal(req.Columns)
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE documents SET sheet_name=$2, column_map=$3, status=$4, error_message=NULL, updated_at=now()
@@ -100,7 +110,7 @@ func (s *server) ingestDocument(c *gin.Context) {
 		s.processSpreadsheet(pctx, id, key, kind, req.Sheet, req.Columns)
 	}()
 
-	doc, err := s.loadDocument(ctx, id)
+	doc, err = s.loadDocument(ctx, id)
 	if err != nil {
 		c.JSON(http.StatusAccepted, gin.H{"id": id, "status": statusExtracting})
 		return

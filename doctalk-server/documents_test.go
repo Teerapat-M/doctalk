@@ -102,6 +102,24 @@ func TestUploadRejectsNonPDFEvenIfNamedPdf(t *testing.T) {
 	}
 }
 
+func TestUploadRejectsMacroEnabledXLSX(t *testing.T) {
+	s := &server{cfg: config{CORSOrigin: "*", MaxUploadBytes: 1 << 20}, embed: &fakeEmbedder{}}
+	r := newRouter(s)
+	xlsm := zipWithFiles(t, map[string]string{
+		"[Content_Types].xml": "<Types/>",
+		"xl/workbook.xml":     "<workbook/>",
+		"xl/vbaProject.bin":   "macro",
+	})
+	body, ctype := pdfForm(t, "quiz.xlsm", xlsm)
+	req := httptest.NewRequest(http.MethodPost, "/documents", body)
+	req.Header.Set("Content-Type", ctype)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "macro-enabled") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestUploadRejectsTooLarge(t *testing.T) {
 	s := &server{
 		cfg:     config{CORSOrigin: "*", MaxUploadBytes: 32},

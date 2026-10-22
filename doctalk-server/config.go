@@ -33,6 +33,8 @@ const (
 	citationSnippetRunes     = 240
 	defaultQuizN             = 5
 	defaultQuizNMax          = 20
+	defaultVitePort          = "4317"
+	defaultCORSOrigin        = "http://localhost:" + defaultVitePort + ",http://127.0.0.1:" + defaultVitePort
 )
 
 type config struct {
@@ -61,7 +63,7 @@ func loadConfig() (config, error) {
 	cfg := config{
 		Port:                    listenPort(),
 		DatabaseURL:             os.Getenv("DATABASE_URL"),
-		CORSOrigin:              getenv("CORS_ORIGIN", "*"),
+		CORSOrigin:              getenv("CORS_ORIGIN", defaultCORSOrigin),
 		GeminiAPIKey:            os.Getenv("GEMINI_API_KEY"),
 		GeminiBaseURL:           strings.TrimRight(getenv("GEMINI_BASE_URL", defaultGeminiBaseURL), "/"),
 		GeminiEmbeddingModel:    getenv("GEMINI_EMBEDDING_MODEL", defaultEmbedModel),

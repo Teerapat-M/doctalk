@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Smoke-test PDF/Excel ingest, ask, and quiz against a running DocTalk stack.
 # Requires GEMINI_API_KEY (never printed) and a reachable API + Postgres.
+# Talks to the API (default http://localhost:8181). The Vite UI defaults to 4317.
 set -euo pipefail
 
 # Do not enable `set -x`: it would print GEMINI_API_KEY if referenced.

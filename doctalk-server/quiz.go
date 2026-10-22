@@ -22,7 +22,7 @@ type Quizzer interface {
 type quizRequest struct {
 	DocumentIDs []string `json:"document_ids"`
 	ChunkIDs    []string `json:"chunk_ids"`
-	N           int      `json:"n"`
+	N           *int     `json:"n"`
 	Mode        string   `json:"mode"`
 }
 
@@ -74,16 +74,13 @@ func (s *server) generateQuiz(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chunk_id"})
 		return
 	}
-	n := req.N
-	if n <= 0 {
-		n = defaultQuizN
-	}
 	maxN := s.cfg.QuizNMax
 	if maxN < 1 {
 		maxN = defaultQuizNMax
 	}
-	if n > maxN {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("n is capped at %d", maxN)})
+	n, nerr := parseOptionalBounded(req.N, defaultQuizN, maxN, "n")
+	if nerr != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": nerr})
 		return
 	}
 	mode := strings.ToLower(strings.TrimSpace(req.Mode))
