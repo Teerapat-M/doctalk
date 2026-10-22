@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"math/rand"
 	"time"
 )
 
@@ -44,7 +45,10 @@ func (l *slotLimiter) release() {
 type geminiRetry struct {
 	attempts int
 	budget   time.Duration
+	base     time.Duration
+	maxDelay time.Duration
 	sleep    func(context.Context, time.Duration) error
+	jitter   func(time.Duration) time.Duration
 	limiter  *slotLimiter
 }
 
@@ -52,6 +56,9 @@ func (p geminiRetry) do(ctx context.Context, call func() (retryAfter time.Durati
 	attempts := p.attempts
 	if attempts < 1 {
 		attempts = 1
+	}
+	if attempts > maxGeminiAttempts {
+		attempts = maxGeminiAttempts
 	}
 	budget := p.budget
 	if budget <= 0 {
@@ -61,8 +68,20 @@ func (p geminiRetry) do(ctx context.Context, call func() (retryAfter time.Durati
 	if sleep == nil {
 		sleep = defaultSleep
 	}
+	jitter := p.jitter
+	if jitter == nil {
+		jitter = defaultJitter
+	}
+	base := p.base
+	if base <= 0 {
+		base = defaultGeminiRetryBase
+	}
+	maxDelay := p.maxDelay
+	if maxDelay < base {
+		maxDelay = base
+	}
 	deadline := time.Now().Add(budget)
-	delay := 500 * time.Millisecond
+	delay := base
 	var last error
 	for i := 0; i < attempts; i++ {
 		if err := p.limiter.acquire(ctx); err != nil {
@@ -80,7 +99,10 @@ func (p geminiRetry) do(ctx context.Context, call func() (retryAfter time.Durati
 		if i == attempts-1 {
 			break
 		}
-		wait := delay
+		wait := jitter(delay)
+		if wait < 0 {
+			wait = 0
+		}
 		if retryAfter > wait {
 			wait = retryAfter
 		}
@@ -94,9 +116,24 @@ func (p geminiRetry) do(ctx context.Context, call func() (retryAfter time.Durati
 		if err := sleep(ctx, wait); err != nil {
 			return err
 		}
-		if delay < 4*time.Second {
+		if delay < maxDelay {
 			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
 		}
 	}
 	return last
+}
+
+func defaultJitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	// Equal jitter: [d/2, d].
+	half := d / 2
+	if half <= 0 {
+		return d
+	}
+	return half + time.Duration(rand.Int63n(int64(half)+1))
 }

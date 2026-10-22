@@ -371,6 +371,40 @@ func TestAskUpstreamFailureAfterValidationIsSSE(t *testing.T) {
 	}
 }
 
+func TestAskStreamTimeoutSendsErrorEvent(t *testing.T) {
+	orig := sseHeartbeatInterval
+	sseHeartbeatInterval = 15 * time.Millisecond
+	defer func() { sseHeartbeatInterval = orig }()
+
+	db := openTestDB(t)
+	id := insertDoneDoc(t, db, "stall.pdf")
+	insertChunk(t, db, id, 0, 1, "hello", unitVec(0))
+	chat := &fakeChat{block: true, deltas: []string{"FOUND\n", "…"}}
+	s := &server{
+		db:    db,
+		cfg:   config{CORSOrigin: "*", AskTopK: 5, AskTopKMax: 20, AskTimeout: 80 * time.Millisecond},
+		embed: &fakeEmbedder{query: unitVec(0)},
+		chat:  chat,
+	}
+	r := newRouter(s)
+	payload, _ := json.Marshal(askRequest{Question: "q", DocumentIDs: []string{id}})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	body := w.Body.String()
+	if !strings.Contains(body, ": ping") {
+		t.Fatalf("missing SSE heartbeat, body=%s", body)
+	}
+	events := parseTestSSE(t, body)
+	if events.err == "" || !strings.Contains(events.err, "timed out") {
+		t.Fatalf("want timeout error event, got %+v body=%s", events, body)
+	}
+	if !strings.Contains(strings.Join(events.deltas, ""), "…") {
+		t.Fatalf("want partial delta before timeout, got %+v", events)
+	}
+}
+
 func TestAskTimeoutBeforeStream(t *testing.T) {
 	db := openTestDB(t)
 	id := insertDoneDoc(t, db, "slow.pdf")

@@ -87,6 +87,54 @@ func TestGeminiQuizJSONSchemaAndRetry(t *testing.T) {
 	}
 }
 
+func TestGeminiQuizFallbackAfter503(t *testing.T) {
+	var primary, fallback atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "quiz-primary") {
+			primary.Add(1)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"status":"UNAVAILABLE","message":"high demand"}}`))
+			return
+		}
+		if strings.Contains(r.URL.Path, "quiz-fallback") {
+			fallback.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"candidates": []any{
+					map[string]any{
+						"content": map[string]any{
+							"parts": []any{map[string]any{"text": `{"questions":[]}`}},
+						},
+					},
+				},
+			})
+			return
+		}
+		t.Errorf("unexpected path %s", r.URL.Path)
+	}))
+	defer srv.Close()
+
+	g := &geminiQuiz{
+		apiKey:     "k",
+		model:      "quiz-primary",
+		fallback:   "quiz-fallback",
+		baseURL:    srv.URL,
+		http:       srv.Client(),
+		maxRetries: 2,
+		budget:     time.Second,
+		sleep:      func(context.Context, time.Duration) error { return nil },
+	}
+	raw, err := g.GenerateJSON(context.Background(), "sys", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"questions"`) {
+		t.Fatalf("body=%s", raw)
+	}
+	if primary.Load() < 1 || fallback.Load() != 1 {
+		t.Fatalf("primary=%d fallback=%d", primary.Load(), fallback.Load())
+	}
+}
+
 func TestNewGeminiQuizModelDefaultsToChat(t *testing.T) {
 	g := newGeminiQuiz(config{GeminiAPIKey: "k", GeminiChatModel: "chat-m", GeminiQuizModel: ""}, nil)
 	if g.model != "chat-m" {

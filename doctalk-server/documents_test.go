@@ -137,6 +137,26 @@ func TestUploadRejectsTooLarge(t *testing.T) {
 	if w.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
+	var payloadJSON map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &payloadJSON); err != nil {
+		t.Fatal(err)
+	}
+	errMsg, _ := payloadJSON["error"].(string)
+	if !strings.Contains(errMsg, "file too large") || !strings.Contains(errMsg, "max 32 bytes") {
+		t.Fatalf("error=%q", errMsg)
+	}
+	if payloadJSON["max_bytes"] != float64(32) {
+		t.Fatalf("max_bytes=%v", payloadJSON["max_bytes"])
+	}
+}
+
+func TestHumanUploadLimit(t *testing.T) {
+	if got := humanUploadLimit(10 << 20); got != "10 MB" {
+		t.Fatalf("got %q", got)
+	}
+	if got := humanUploadLimit(32); got != "32 bytes" {
+		t.Fatalf("got %q", got)
+	}
 }
 
 func TestUploadRequiresGeminiWhenNotMocked(t *testing.T) {

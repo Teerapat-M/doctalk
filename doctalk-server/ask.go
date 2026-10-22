@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -138,20 +140,32 @@ func (s *server) ask(c *gin.Context) {
 	}()
 
 	s.startSSE(c)
+	var sseMu sync.Mutex
+	stopHB := startSSEHeartbeats(c.Writer, ctx, &sseMu)
+	defer stopHB()
+
+	writeEvent := func(event string, v any) error {
+		sseMu.Lock()
+		defer sseMu.Unlock()
+		return writeSSE(c.Writer, event, v)
+	}
+	fail := func(err error) {
+		s.writeAskErrLocked(c, true, err, &sseMu)
+	}
 
 	qvec, err := s.embed.EmbedQuery(ctx, question)
 	if err != nil {
-		s.writeAskErr(c, true, err)
+		fail(err)
 		return
 	}
 	if len(qvec) != EmbeddingDim {
-		s.writeAskErr(c, true, errors.New("gemini embedding: unexpected dimension"))
+		fail(errors.New("gemini embedding: unexpected dimension"))
 		return
 	}
 
 	chunks, err := s.retrieve(ctx, docIDs, qvec, k)
 	if err != nil {
-		s.writeAskErr(c, true, err)
+		fail(err)
 		return
 	}
 
@@ -159,13 +173,14 @@ func (s *server) ask(c *gin.Context) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		return writeSSE(c.Writer, "delta", deltaEvent{Text: delta})
+		return writeEvent("delta", deltaEvent{Text: delta})
 	}
 
 	notFound := false
 	if len(chunks) == 0 {
 		notFound = true
 		if err := emit(notFoundReply(question)); err != nil {
+			fail(err)
 			return
 		}
 	} else {
@@ -173,11 +188,11 @@ func (s *server) ask(c *gin.Context) {
 		if err := s.chat.StreamAnswer(ctx, question, chunks, func(delta string) error {
 			return gate.push(delta, emit)
 		}); err != nil {
-			s.writeAskErr(c, true, err)
+			fail(err)
 			return
 		}
 		if err := gate.flush(emit); err != nil {
-			s.writeAskErr(c, true, err)
+			fail(err)
 			return
 		}
 		notFound = gate.notFound
@@ -186,7 +201,10 @@ func (s *server) ask(c *gin.Context) {
 	if notFound {
 		citations = []citationJSON{}
 	}
-	_ = writeSSE(c.Writer, "final", finalEvent{Citations: citations})
+	if err := writeEvent("final", finalEvent{Citations: citations}); err != nil {
+		fail(err)
+		return
+	}
 	keep = true
 }
 
@@ -202,24 +220,71 @@ func (s *server) startSSE(c *gin.Context) {
 	}
 }
 
+var sseHeartbeatInterval = 2 * time.Second
+
+func startSSEHeartbeats(w http.ResponseWriter, ctx context.Context, mu *sync.Mutex) context.CancelFunc {
+	hbCtx, cancel := context.WithCancel(ctx)
+	interval := sseHeartbeatInterval
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-hbCtx.Done():
+				return
+			case <-t.C:
+				if err := writeSSEHeartbeat(w, mu); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	return cancel
+}
+
+func writeSSEHeartbeat(w http.ResponseWriter, mu *sync.Mutex) error {
+	if mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
+		return err
+	}
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	return nil
+}
+
 func (s *server) writeAskErr(c *gin.Context, started bool, err error) {
+	s.writeAskErrLocked(c, started, err, nil)
+}
+
+func (s *server) writeAskErrLocked(c *gin.Context, started bool, err error, mu *sync.Mutex) {
 	msg := redactErr(err, s.cfg.GeminiAPIKey)
-	if errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.Canceled) && !isTimeoutErr(err) {
 		return
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	if isTimeoutErr(err) {
 		msg = "ask timed out"
 	}
 	log.Printf("ask: %s", msg)
 	if !started {
 		status := http.StatusBadGateway
-		if errors.Is(err, context.DeadlineExceeded) {
+		if isTimeoutErr(err) {
 			status = http.StatusGatewayTimeout
 		} else if !strings.Contains(msg, "gemini") {
 			status = http.StatusInternalServerError
 		}
 		c.JSON(status, gin.H{"error": msg})
 		return
+	}
+	if mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
 	}
 	_ = writeSSE(c.Writer, "error", sseErrorEvent{Error: msg})
 }

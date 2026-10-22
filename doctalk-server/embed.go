@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -27,6 +28,9 @@ type geminiEmbedder struct {
 	batchSize  int
 	maxRetries int
 	budget     time.Duration
+	baseDelay  time.Duration
+	maxDelay   time.Duration
+	reqTimeout time.Duration
 	sleep      func(context.Context, time.Duration) error
 	limiter    *slotLimiter
 }
@@ -40,14 +44,25 @@ func newGeminiEmbedder(cfg config, lim *slotLimiter) *geminiEmbedder {
 	if budget <= 0 {
 		budget = defaultGeminiRetryBudget
 	}
+	attempts := cfg.GeminiRetryAttempts
+	if attempts < 1 {
+		attempts = defaultGeminiAttempts
+	}
+	reqTimeout := cfg.GeminiRequestTimeout
+	if reqTimeout <= 0 {
+		reqTimeout = defaultGeminiRequestTimeout
+	}
 	return &geminiEmbedder{
 		apiKey:     cfg.GeminiAPIKey,
 		model:      cfg.GeminiEmbeddingModel,
 		baseURL:    strings.TrimRight(base, "/"),
-		http:       &http.Client{Timeout: 60 * time.Second},
+		http:       &http.Client{Timeout: reqTimeout},
 		batchSize:  cfg.GeminiEmbedBatch,
-		maxRetries: defaultGeminiAttempts,
+		maxRetries: attempts,
 		budget:     budget,
+		baseDelay:  cfg.GeminiRetryBaseDelay,
+		maxDelay:   cfg.GeminiRetryMaxDelay,
+		reqTimeout: reqTimeout,
 		sleep:      defaultSleep,
 		limiter:    lim,
 	}
@@ -166,6 +181,8 @@ func (g *geminiEmbedder) embedBatch(ctx context.Context, texts []string, taskTyp
 	policy := geminiRetry{
 		attempts: g.maxRetries,
 		budget:   g.budget,
+		base:     g.baseDelay,
+		maxDelay: g.maxDelay,
 		sleep:    g.sleep,
 		limiter:  g.limiter,
 	}
@@ -181,11 +198,14 @@ func (g *geminiEmbedder) embedBatch(ctx context.Context, texts []string, taskTyp
 	return vecs, nil
 }
 
-// doEmbed returns retryAfter >= 0 when the caller should retry (429/503).
+// doEmbed returns retryAfter >= 0 when the caller should retry (429/5xx).
 // retryAfter < 0 means a non-retryable error. The API key is never included
-// in returned errors.
+// in returned errors. Embeddings always use this model and EmbeddingDim;
+// there is no fallback model (dims must stay 768).
 func (g *geminiEmbedder) doEmbed(ctx context.Context, payload []byte) ([][]float32, time.Duration, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint(), bytes.NewReader(payload))
+	callCtx, cancel := withGeminiTimeout(ctx, g.reqTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, g.endpoint(), bytes.NewReader(payload))
 	if err != nil {
 		return nil, -1, g.errf("gemini embedding: %v", err)
 	}
@@ -194,13 +214,19 @@ func (g *geminiEmbedder) doEmbed(ctx context.Context, payload []byte) ([][]float
 
 	res, err := g.http.Do(req)
 	if err != nil {
+		if callCtx.Err() != nil {
+			return nil, -1, callCtx.Err()
+		}
+		if isTimeoutErr(err) {
+			return nil, -1, context.DeadlineExceeded
+		}
 		return nil, -1, g.errf("gemini embedding: request failed")
 	}
 	defer res.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 
-	if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable {
-		return nil, parseRetryAfter(res.Header.Get("Retry-After")), g.httpErr(res.StatusCode, body)
+	if retryAfter := geminiHTTPRetryAfter(res.StatusCode, res.Header.Get("Retry-After")); retryAfter >= 0 {
+		return nil, retryAfter, g.httpErr(res.StatusCode, body)
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return nil, -1, g.httpErr(res.StatusCode, body)
@@ -269,13 +295,50 @@ func parseGeminiError(body []byte) string {
 }
 
 func parseRetryAfter(h string) time.Duration {
+	h = strings.TrimSpace(h)
 	if h == "" {
 		return 0
 	}
 	if n, err := strconv.Atoi(h); err == nil && n >= 0 {
 		return time.Duration(n) * time.Second
 	}
+	if t, err := time.Parse(time.RFC1123, h); err == nil {
+		d := time.Until(t)
+		if d < 0 {
+			return 0
+		}
+		return d
+	}
 	return 0
+}
+
+func geminiHTTPRetryAfter(status int, header string) time.Duration {
+	if status == http.StatusTooManyRequests || status >= 500 {
+		return parseRetryAfter(header)
+	}
+	return -1
+}
+
+func withGeminiTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if d <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, d)
+}
+
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var nerr net.Error
+	if errors.As(err, &nerr) && nerr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded")
 }
 
 func l2normalize(v []float32) {

@@ -281,6 +281,56 @@ func TestGeminiChatConcurrentHTTP(t *testing.T) {
 	}
 }
 
+func TestGeminiChatRetries500ThenFallback(t *testing.T) {
+	var primary, fallback atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "primary-model") {
+			n := primary.Add(1)
+			if n == 1 {
+				w.Header().Set("Retry-After", "0")
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"error":{"status":"INTERNAL","message":"busy"}}`))
+				return
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"status":"UNAVAILABLE","message":"high demand"}}`))
+			return
+		}
+		if strings.Contains(r.URL.Path, "fallback-model") {
+			fallback.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"fb\"}]}}]}\n\n"))
+			return
+		}
+		t.Errorf("unexpected path %s", r.URL.Path)
+	}))
+	defer srv.Close()
+
+	g := &geminiChat{
+		apiKey:     "k",
+		model:      "primary-model",
+		fallback:   "fallback-model",
+		baseURL:    srv.URL,
+		http:       srv.Client(),
+		maxRetries: 2,
+		budget:     time.Second,
+		sleep:      func(context.Context, time.Duration) error { return nil },
+	}
+	var got strings.Builder
+	if err := g.StreamAnswer(context.Background(), "q", nil, func(s string) error {
+		got.WriteString(s)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != "fb" {
+		t.Fatalf("got %q", got.String())
+	}
+	if primary.Load() != 2 || fallback.Load() != 1 {
+		t.Fatalf("primary=%d fallback=%d", primary.Load(), fallback.Load())
+	}
+}
+
 func TestGeminiChatFallbackAfter503(t *testing.T) {
 	var primary, fallback atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

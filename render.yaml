@@ -59,10 +59,20 @@ services:
         value: gemini-embedding-001
       - key: GEMINI_CHAT_MODEL
         value: gemini-3.8-flash
+      - key: GEMINI_FALLBACK_MODEL
+        value: gemini-2.0-flash
       - key: GEMINI_MAX_IN_FLIGHT
         value: "2"
+      - key: GEMINI_RETRY_ATTEMPTS
+        value: "3"
       - key: GEMINI_RETRY_BUDGET_SECONDS
         value: "8"
+      - key: GEMINI_RETRY_BASE_DELAY_MS
+        value: "500"
+      - key: GEMINI_RETRY_MAX_DELAY_MS
+        value: "4000"
+      - key: GEMINI_REQUEST_TIMEOUT_SECONDS
+        value: "25"
       - key: QUIZ_N_MAX
         value: "20"
       - key: ASK_TOP_K

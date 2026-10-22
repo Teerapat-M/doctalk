@@ -17,107 +17,120 @@ import (
 const EmbeddingDim = 768
 
 const (
-	defaultAPIPort           = "8181"
-	defaultMaxUpload         = 10 << 20 // 10 MiB
-	defaultStorageDir        = "data/uploads"
-	defaultEmbedBatch        = 16
-	defaultEmbedModel        = "gemini-embedding-001"
-	defaultChatModel         = "gemini-3.8-flash"
-	defaultGeminiBaseURL     = "https://generativelanguage.googleapis.com"
-	defaultAskTopK           = 5
-	defaultAskTopKMax        = 20
-	defaultAskTimeoutSec     = 60
-	defaultGeminiAttempts    = 3
-	defaultGeminiRetryBudget = 8 * time.Second
-	defaultGeminiMaxInFlight = 2
-	maxQuestionRunes         = 4000
-	maxAskDocumentIDs        = 32
-	citationSnippetRunes     = 240
-	defaultQuizN             = 5
-	defaultQuizNMax          = 20
-	defaultVitePort          = "3917"
-	defaultCORSOrigin        = "http://localhost:" + defaultVitePort + ",http://127.0.0.1:" + defaultVitePort
-	defaultQuizPerDay        = 5
-	defaultAskPerMinute      = 20
-	defaultIngestPerMinute   = 10
-	defaultQuizIPPerDay      = 20
-	defaultQuizResetHour     = 7
-	defaultGuestTTL          = 7 * 24 * time.Hour
-	defaultMaxPages          = 50
-	defaultMaxRows           = 2000
-	defaultSupabaseBucket    = "doctalk-uploads"
-	minJWTSecretBytes        = 32
+	defaultAPIPort              = "8181"
+	defaultMaxUpload            = 10 << 20 // 10 MiB
+	defaultStorageDir           = "data/uploads"
+	defaultEmbedBatch           = 16
+	defaultEmbedModel           = "gemini-embedding-001"
+	defaultChatModel            = "gemini-3.8-flash"
+	defaultGeminiFallbackModel  = "gemini-2.0-flash"
+	defaultGeminiBaseURL        = "https://generativelanguage.googleapis.com"
+	defaultAskTopK              = 5
+	defaultAskTopKMax           = 20
+	defaultAskTimeoutSec        = 60
+	defaultGeminiAttempts       = 3
+	maxGeminiAttempts           = 8
+	defaultGeminiRetryBudget    = 8 * time.Second
+	defaultGeminiRetryBase      = 500 * time.Millisecond
+	defaultGeminiRetryMaxDelay  = 4 * time.Second
+	defaultGeminiRequestTimeout = 25 * time.Second
+	defaultGeminiMaxInFlight    = 2
+	maxQuestionRunes            = 4000
+	maxAskDocumentIDs           = 32
+	citationSnippetRunes        = 240
+	defaultQuizN                = 5
+	defaultQuizNMax             = 20
+	defaultVitePort             = "3917"
+	defaultCORSOrigin           = "http://localhost:" + defaultVitePort + ",http://127.0.0.1:" + defaultVitePort
+	defaultQuizPerDay           = 5
+	defaultAskPerMinute         = 20
+	defaultIngestPerMinute      = 10
+	defaultQuizIPPerDay         = 20
+	defaultQuizResetHour        = 7
+	defaultGuestTTL             = 7 * 24 * time.Hour
+	defaultMaxPages             = 50
+	defaultMaxRows              = 2000
+	defaultSupabaseBucket       = "doctalk-uploads"
+	minJWTSecretBytes           = 32
 )
 
 type config struct {
-	Port                    string
-	DatabaseURL             string
-	CORSOrigin              string
-	GeminiAPIKey            string
-	GeminiBaseURL           string
-	GeminiEmbeddingModel    string
-	GeminiChatModel         string
-	GeminiChatFallbackModel string
-	GeminiQuizModel         string
-	GeminiEmbedBatch        int
-	GeminiMaxInFlight       int
-	GeminiRetryBudget       time.Duration
-	QuizNMax                int
-	AskTopK                 int
-	AskTopKMax              int
-	AskTimeout              time.Duration
-	MaxUploadBytes          int64
-	MaxPages                int
-	MaxRows                 int
-	StorageDir              string
-	TrustedProxies          []string
-	ClientIPHeader          string
-	JWTSecret               string
-	QuizPerDay              int
-	AskPerMinute            int
-	IngestPerMinute         int
-	QuizIPPerDay            int
-	QuizResetHour           int
-	GuestTTL                time.Duration
-	CookieSecure            bool
-	CookieSameSite          http.SameSite
-	SupabaseURL             string
-	SupabaseServiceKey      string
-	SupabaseBucket          string
+	Port                 string
+	DatabaseURL          string
+	CORSOrigin           string
+	GeminiAPIKey         string
+	GeminiBaseURL        string
+	GeminiEmbeddingModel string
+	GeminiChatModel      string
+	GeminiFallbackModel  string
+	GeminiQuizModel      string
+	GeminiEmbedBatch     int
+	GeminiMaxInFlight    int
+	GeminiRetryAttempts  int
+	GeminiRetryBudget    time.Duration
+	GeminiRetryBaseDelay time.Duration
+	GeminiRetryMaxDelay  time.Duration
+	GeminiRequestTimeout time.Duration
+	QuizNMax             int
+	AskTopK              int
+	AskTopKMax           int
+	AskTimeout           time.Duration
+	MaxUploadBytes       int64
+	MaxPages             int
+	MaxRows              int
+	StorageDir           string
+	TrustedProxies       []string
+	ClientIPHeader       string
+	JWTSecret            string
+	QuizPerDay           int
+	AskPerMinute         int
+	IngestPerMinute      int
+	QuizIPPerDay         int
+	QuizResetHour        int
+	GuestTTL             time.Duration
+	CookieSecure         bool
+	CookieSameSite       http.SameSite
+	SupabaseURL          string
+	SupabaseServiceKey   string
+	SupabaseBucket       string
 }
 
 func loadConfig() (config, error) {
 	cfg := config{
-		Port:                    listenPort(),
-		DatabaseURL:             os.Getenv("DATABASE_URL"),
-		CORSOrigin:              getenv("CORS_ORIGIN", defaultCORSOrigin),
-		GeminiAPIKey:            os.Getenv("GEMINI_API_KEY"),
-		GeminiBaseURL:           strings.TrimRight(getenv("GEMINI_BASE_URL", defaultGeminiBaseURL), "/"),
-		GeminiEmbeddingModel:    getenv("GEMINI_EMBEDDING_MODEL", defaultEmbedModel),
-		GeminiChatModel:         getenv("GEMINI_CHAT_MODEL", defaultChatModel),
-		GeminiChatFallbackModel: os.Getenv("GEMINI_CHAT_FALLBACK_MODEL"),
-		GeminiQuizModel:         os.Getenv("GEMINI_QUIZ_MODEL"),
-		GeminiEmbedBatch:        getenvInt("GEMINI_EMBED_BATCH", defaultEmbedBatch),
-		GeminiMaxInFlight:       getenvInt("GEMINI_MAX_IN_FLIGHT", defaultGeminiMaxInFlight),
-		GeminiRetryBudget:       time.Duration(getenvInt("GEMINI_RETRY_BUDGET_SECONDS", 8)) * time.Second,
-		QuizNMax:                getenvInt("QUIZ_N_MAX", defaultQuizNMax),
-		AskTopK:                 getenvInt("ASK_TOP_K", defaultAskTopK),
-		AskTopKMax:              getenvInt("ASK_TOP_K_MAX", defaultAskTopKMax),
-		AskTimeout:              time.Duration(getenvInt("ASK_TIMEOUT_SECONDS", defaultAskTimeoutSec)) * time.Second,
-		MaxUploadBytes:          getenvInt64("MAX_UPLOAD_BYTES", defaultMaxUpload),
-		MaxPages:                getenvInt("MAX_PAGES", defaultMaxPages),
-		MaxRows:                 getenvInt("MAX_ROWS", defaultMaxRows),
-		StorageDir:              getenv("STORAGE_DIR", defaultStorageDir),
-		TrustedProxies:          splitCSV(os.Getenv("TRUSTED_PROXIES")),
-		JWTSecret:               os.Getenv("JWT_SECRET"),
-		QuizPerDay:              getenvInt("QUIZ_PER_DAY", defaultQuizPerDay),
-		AskPerMinute:            getenvInt("ASK_PER_MINUTE", defaultAskPerMinute),
-		IngestPerMinute:         getenvInt("INGEST_PER_MINUTE", defaultIngestPerMinute),
-		QuizIPPerDay:            getenvInt("QUIZ_IP_PER_DAY", defaultQuizIPPerDay),
-		GuestTTL:                time.Duration(getenvInt("GUEST_TTL_HOURS", int(defaultGuestTTL/time.Hour))) * time.Hour,
-		SupabaseURL:             strings.TrimRight(os.Getenv("SUPABASE_URL"), "/"),
-		SupabaseServiceKey:      os.Getenv("SUPABASE_SERVICE_ROLE_KEY"),
-		SupabaseBucket:          getenv("SUPABASE_BUCKET", defaultSupabaseBucket),
+		Port:                 listenPort(),
+		DatabaseURL:          os.Getenv("DATABASE_URL"),
+		CORSOrigin:           getenv("CORS_ORIGIN", defaultCORSOrigin),
+		GeminiAPIKey:         os.Getenv("GEMINI_API_KEY"),
+		GeminiBaseURL:        strings.TrimRight(getenv("GEMINI_BASE_URL", defaultGeminiBaseURL), "/"),
+		GeminiEmbeddingModel: getenv("GEMINI_EMBEDDING_MODEL", defaultEmbedModel),
+		GeminiChatModel:      getenv("GEMINI_CHAT_MODEL", defaultChatModel),
+		GeminiFallbackModel:  loadGeminiFallbackModel(),
+		GeminiQuizModel:      os.Getenv("GEMINI_QUIZ_MODEL"),
+		GeminiEmbedBatch:     getenvInt("GEMINI_EMBED_BATCH", defaultEmbedBatch),
+		GeminiMaxInFlight:    getenvInt("GEMINI_MAX_IN_FLIGHT", defaultGeminiMaxInFlight),
+		GeminiRetryAttempts:  getenvInt("GEMINI_RETRY_ATTEMPTS", defaultGeminiAttempts),
+		GeminiRetryBudget:    time.Duration(getenvInt("GEMINI_RETRY_BUDGET_SECONDS", 8)) * time.Second,
+		GeminiRetryBaseDelay: time.Duration(getenvInt("GEMINI_RETRY_BASE_DELAY_MS", 500)) * time.Millisecond,
+		GeminiRetryMaxDelay:  time.Duration(getenvInt("GEMINI_RETRY_MAX_DELAY_MS", 4000)) * time.Millisecond,
+		GeminiRequestTimeout: time.Duration(getenvInt("GEMINI_REQUEST_TIMEOUT_SECONDS", 25)) * time.Second,
+		QuizNMax:             getenvInt("QUIZ_N_MAX", defaultQuizNMax),
+		AskTopK:              getenvInt("ASK_TOP_K", defaultAskTopK),
+		AskTopKMax:           getenvInt("ASK_TOP_K_MAX", defaultAskTopKMax),
+		AskTimeout:           time.Duration(getenvInt("ASK_TIMEOUT_SECONDS", defaultAskTimeoutSec)) * time.Second,
+		MaxUploadBytes:       getenvInt64("MAX_UPLOAD_BYTES", defaultMaxUpload),
+		MaxPages:             getenvInt("MAX_PAGES", defaultMaxPages),
+		MaxRows:              getenvInt("MAX_ROWS", defaultMaxRows),
+		StorageDir:           getenv("STORAGE_DIR", defaultStorageDir),
+		TrustedProxies:       splitCSV(os.Getenv("TRUSTED_PROXIES")),
+		JWTSecret:            os.Getenv("JWT_SECRET"),
+		QuizPerDay:           getenvInt("QUIZ_PER_DAY", defaultQuizPerDay),
+		AskPerMinute:         getenvInt("ASK_PER_MINUTE", defaultAskPerMinute),
+		IngestPerMinute:      getenvInt("INGEST_PER_MINUTE", defaultIngestPerMinute),
+		QuizIPPerDay:         getenvInt("QUIZ_IP_PER_DAY", defaultQuizIPPerDay),
+		GuestTTL:             time.Duration(getenvInt("GUEST_TTL_HOURS", int(defaultGuestTTL/time.Hour))) * time.Hour,
+		SupabaseURL:          strings.TrimRight(os.Getenv("SUPABASE_URL"), "/"),
+		SupabaseServiceKey:   os.Getenv("SUPABASE_SERVICE_ROLE_KEY"),
+		SupabaseBucket:       getenv("SUPABASE_BUCKET", defaultSupabaseBucket),
 	}
 	sameSite, err := parseCookieSameSite(os.Getenv("COOKIE_SAMESITE"))
 	if err != nil {
@@ -223,6 +236,12 @@ func loadConfig() (config, error) {
 	if cfg.GuestTTL < time.Hour {
 		cfg.GuestTTL = defaultGuestTTL
 	}
+	if cfg.GeminiRetryAttempts < 1 {
+		cfg.GeminiRetryAttempts = defaultGeminiAttempts
+	}
+	if cfg.GeminiRetryAttempts > maxGeminiAttempts {
+		cfg.GeminiRetryAttempts = maxGeminiAttempts
+	}
 	if cfg.GeminiRetryBudget < time.Second {
 		cfg.GeminiRetryBudget = defaultGeminiRetryBudget
 	}
@@ -232,7 +251,35 @@ func loadConfig() (config, error) {
 			cfg.GeminiRetryBudget = time.Second
 		}
 	}
+	if cfg.GeminiRetryBaseDelay < 50*time.Millisecond {
+		cfg.GeminiRetryBaseDelay = defaultGeminiRetryBase
+	}
+	if cfg.GeminiRetryBaseDelay > 5*time.Second {
+		cfg.GeminiRetryBaseDelay = 5 * time.Second
+	}
+	if cfg.GeminiRetryMaxDelay < cfg.GeminiRetryBaseDelay {
+		cfg.GeminiRetryMaxDelay = cfg.GeminiRetryBaseDelay
+	}
+	if cfg.GeminiRetryMaxDelay > 30*time.Second {
+		cfg.GeminiRetryMaxDelay = 30 * time.Second
+	}
+	if cfg.GeminiRequestTimeout < 5*time.Second {
+		cfg.GeminiRequestTimeout = defaultGeminiRequestTimeout
+	}
+	if cfg.GeminiRequestTimeout > cfg.AskTimeout {
+		cfg.GeminiRequestTimeout = cfg.AskTimeout
+	}
 	return cfg, nil
+}
+
+func loadGeminiFallbackModel() string {
+	if v := strings.TrimSpace(os.Getenv("GEMINI_FALLBACK_MODEL")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("GEMINI_CHAT_FALLBACK_MODEL")); v != "" {
+		return v
+	}
+	return defaultGeminiFallbackModel
 }
 
 // listenPort prefers API_PORT (local compose / host) then PORT (Render).

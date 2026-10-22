@@ -51,7 +51,7 @@ func (s *server) uploadDocument(c *gin.Context) {
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+			s.writeTooLarge(c)
 			return
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing file field"})
@@ -63,14 +63,14 @@ func (s *server) uploadDocument(c *gin.Context) {
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+			s.writeTooLarge(c)
 			return
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "could not read file"})
 		return
 	}
 	if int64(len(data)) > s.cfg.MaxUploadBytes {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+		s.writeTooLarge(c)
 		return
 	}
 	filename := filepath.Base(hdr.Filename)
@@ -368,6 +368,29 @@ func redactErr(err error, apiKey string) string {
 		return ""
 	}
 	return redactSecrets(err.Error(), apiKey)
+}
+
+func (s *server) writeTooLarge(c *gin.Context) {
+	max := s.cfg.MaxUploadBytes
+	if max < 1 {
+		max = defaultMaxUpload
+	}
+	c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+		"error":     fmt.Sprintf("file too large (max %s)", humanUploadLimit(max)),
+		"max_bytes": max,
+	})
+}
+
+func humanUploadLimit(n int64) string {
+	const mb = int64(1 << 20)
+	if n >= mb && n%mb == 0 {
+		return fmt.Sprintf("%d MB", n/mb)
+	}
+	const kb = int64(1024)
+	if n >= kb && n%kb == 0 {
+		return fmt.Sprintf("%d KB", n/kb)
+	}
+	return fmt.Sprintf("%d bytes", n)
 }
 
 // keyQueryRe matches ?key= and &key= query values (any case) so a leaked

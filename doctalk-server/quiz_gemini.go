@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -15,10 +16,14 @@ import (
 type geminiQuiz struct {
 	apiKey     string
 	model      string
+	fallback   string
 	baseURL    string
 	http       *http.Client
 	maxRetries int
 	budget     time.Duration
+	baseDelay  time.Duration
+	maxDelay   time.Duration
+	reqTimeout time.Duration
 	sleep      func(context.Context, time.Duration) error
 	limiter    *slotLimiter
 }
@@ -39,20 +44,38 @@ func newGeminiQuiz(cfg config, lim *slotLimiter) *geminiQuiz {
 	if budget <= 0 {
 		budget = defaultGeminiRetryBudget
 	}
+	attempts := cfg.GeminiRetryAttempts
+	if attempts < 1 {
+		attempts = defaultGeminiAttempts
+	}
+	reqTimeout := cfg.GeminiRequestTimeout
+	if reqTimeout <= 0 {
+		reqTimeout = defaultGeminiRequestTimeout
+	}
 	return &geminiQuiz{
 		apiKey:     cfg.GeminiAPIKey,
 		model:      model,
+		fallback:   cfg.GeminiFallbackModel,
 		baseURL:    strings.TrimRight(base, "/"),
-		http:       &http.Client{Timeout: 90 * time.Second},
-		maxRetries: defaultGeminiAttempts,
+		http:       &http.Client{Timeout: reqTimeout},
+		maxRetries: attempts,
 		budget:     budget,
+		baseDelay:  cfg.GeminiRetryBaseDelay,
+		maxDelay:   cfg.GeminiRetryMaxDelay,
+		reqTimeout: reqTimeout,
 		sleep:      defaultSleep,
 		limiter:    lim,
 	}
 }
 
 func (g *geminiQuiz) endpoint() string {
-	model := g.model
+	return g.endpointFor(g.model)
+}
+
+func (g *geminiQuiz) endpointFor(model string) string {
+	if model == "" {
+		model = defaultChatModel
+	}
 	if !strings.HasPrefix(model, "models/") {
 		model = "models/" + model
 	}
@@ -116,15 +139,26 @@ func (g *geminiQuiz) GenerateTypedJSON(ctx context.Context, system, user string,
 		return nil, err
 	}
 
+	out, err := g.generateModel(ctx, g.model, payload, g.maxRetries)
+	if err != nil && g.fallback != "" && g.fallback != g.model && isGeminiFallback(err) {
+		log.Printf("quiz: primary model %s unavailable (%s); trying GEMINI_FALLBACK_MODEL %s", g.model, redactSecrets(err.Error(), g.apiKey), g.fallback)
+		return g.generateModel(ctx, g.fallback, payload, g.maxRetries)
+	}
+	return out, err
+}
+
+func (g *geminiQuiz) generateModel(ctx context.Context, model string, payload []byte, attempts int) ([]byte, error) {
 	var out []byte
 	policy := geminiRetry{
-		attempts: g.maxRetries,
+		attempts: attempts,
 		budget:   g.budget,
+		base:     g.baseDelay,
+		maxDelay: g.maxDelay,
 		sleep:    g.sleep,
 		limiter:  g.limiter,
 	}
-	err = policy.do(ctx, func() (time.Duration, error) {
-		body, retryAfter, err := g.doGenerate(ctx, payload)
+	err := policy.do(ctx, func() (time.Duration, error) {
+		body, retryAfter, err := g.doGenerate(ctx, model, payload)
 		if err == nil {
 			out = body
 		}
@@ -136,8 +170,10 @@ func (g *geminiQuiz) GenerateTypedJSON(ctx context.Context, system, user string,
 	return out, nil
 }
 
-func (g *geminiQuiz) doGenerate(ctx context.Context, payload []byte) ([]byte, time.Duration, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint(), bytes.NewReader(payload))
+func (g *geminiQuiz) doGenerate(ctx context.Context, model string, payload []byte) ([]byte, time.Duration, error) {
+	callCtx, cancel := withGeminiTimeout(ctx, g.reqTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, g.endpointFor(model), bytes.NewReader(payload))
 	if err != nil {
 		return nil, -1, g.errf("gemini quiz: %v", err)
 	}
@@ -146,15 +182,18 @@ func (g *geminiQuiz) doGenerate(ctx context.Context, payload []byte) ([]byte, ti
 
 	res, err := g.http.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, -1, ctx.Err()
+		if callCtx.Err() != nil {
+			return nil, -1, callCtx.Err()
+		}
+		if isTimeoutErr(err) {
+			return nil, -1, context.DeadlineExceeded
 		}
 		return nil, -1, g.errf("gemini quiz: request failed")
 	}
 	defer res.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 2<<20))
-	if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable {
-		return nil, parseRetryAfter(res.Header.Get("Retry-After")), g.httpErr(res.StatusCode, body)
+	if retryAfter := geminiHTTPRetryAfter(res.StatusCode, res.Header.Get("Retry-After")); retryAfter >= 0 {
+		return nil, retryAfter, g.httpErr(res.StatusCode, body)
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return nil, -1, g.httpErr(res.StatusCode, body)

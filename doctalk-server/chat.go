@@ -26,6 +26,9 @@ type geminiChat struct {
 	http       *http.Client
 	maxRetries int
 	budget     time.Duration
+	baseDelay  time.Duration
+	maxDelay   time.Duration
+	reqTimeout time.Duration
 	sleep      func(context.Context, time.Duration) error
 	limiter    *slotLimiter
 }
@@ -35,19 +38,29 @@ func newGeminiChat(cfg config, lim *slotLimiter) *geminiChat {
 	if base == "" {
 		base = defaultGeminiBaseURL
 	}
-	attempts := defaultGeminiAttempts
+	attempts := cfg.GeminiRetryAttempts
+	if attempts < 1 {
+		attempts = defaultGeminiAttempts
+	}
 	budget := cfg.GeminiRetryBudget
 	if budget <= 0 {
 		budget = defaultGeminiRetryBudget
 	}
+	reqTimeout := cfg.GeminiRequestTimeout
+	if reqTimeout <= 0 {
+		reqTimeout = defaultGeminiRequestTimeout
+	}
 	return &geminiChat{
 		apiKey:     cfg.GeminiAPIKey,
 		model:      cfg.GeminiChatModel,
-		fallback:   cfg.GeminiChatFallbackModel,
+		fallback:   cfg.GeminiFallbackModel,
 		baseURL:    strings.TrimRight(base, "/"),
-		http:       &http.Client{},
+		http:       &http.Client{Timeout: reqTimeout},
 		maxRetries: attempts,
 		budget:     budget,
+		baseDelay:  cfg.GeminiRetryBaseDelay,
+		maxDelay:   cfg.GeminiRetryMaxDelay,
+		reqTimeout: reqTimeout,
 		sleep:      defaultSleep,
 		limiter:    lim,
 	}
@@ -85,9 +98,9 @@ func (g *geminiChat) StreamAnswer(ctx context.Context, question string, chunks [
 	}
 
 	err = g.streamModel(ctx, g.model, payload, emit, g.maxRetries)
-	if err != nil && g.fallback != "" && g.fallback != g.model && isGeminiUnavailable(err) {
-		log.Printf("ask: primary model %s unavailable (%s); trying GEMINI_CHAT_FALLBACK_MODEL", g.model, redactSecrets(err.Error(), g.apiKey))
-		return g.streamModel(ctx, g.fallback, payload, emit, 1)
+	if err != nil && g.fallback != "" && g.fallback != g.model && isGeminiFallback(err) {
+		log.Printf("ask: primary model %s unavailable (%s); trying GEMINI_FALLBACK_MODEL %s", g.model, redactSecrets(err.Error(), g.apiKey), g.fallback)
+		return g.streamModel(ctx, g.fallback, payload, emit, g.maxRetries)
 	}
 	return err
 }
@@ -96,6 +109,8 @@ func (g *geminiChat) streamModel(ctx context.Context, model string, payload []by
 	policy := geminiRetry{
 		attempts: attempts,
 		budget:   g.budget,
+		base:     g.baseDelay,
+		maxDelay: g.maxDelay,
 		sleep:    g.sleep,
 		limiter:  g.limiter,
 	}
@@ -133,7 +148,9 @@ type chatGenConfig struct {
 }
 
 func (g *geminiChat) doStream(ctx context.Context, model string, payload []byte, emit func(string) error) (time.Duration, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpointFor(model), bytes.NewReader(payload))
+	callCtx, cancel := withGeminiTimeout(ctx, g.reqTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, g.endpointFor(model), bytes.NewReader(payload))
 	if err != nil {
 		return -1, g.errf("gemini chat: %v", err)
 	}
@@ -143,24 +160,30 @@ func (g *geminiChat) doStream(ctx context.Context, model string, payload []byte,
 
 	res, err := g.http.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
-			return -1, ctx.Err()
+		if callCtx.Err() != nil {
+			return -1, callCtx.Err()
+		}
+		if isTimeoutErr(err) {
+			return -1, context.DeadlineExceeded
 		}
 		return -1, g.errf("gemini chat: request failed")
 	}
 	defer res.Body.Close()
 
-	if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable {
+	if retryAfter := geminiHTTPRetryAfter(res.StatusCode, res.Header.Get("Retry-After")); retryAfter >= 0 {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-		return parseRetryAfter(res.Header.Get("Retry-After")), g.httpErr(res.StatusCode, body)
+		return retryAfter, g.httpErr(res.StatusCode, body)
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 		return -1, g.httpErr(res.StatusCode, body)
 	}
-	if err := parseGeminiSSE(ctx, res.Body, emit); err != nil {
-		if ctx.Err() != nil {
-			return -1, ctx.Err()
+	if err := parseGeminiSSE(callCtx, res.Body, emit); err != nil {
+		if callCtx.Err() != nil {
+			return -1, callCtx.Err()
+		}
+		if isTimeoutErr(err) {
+			return -1, context.DeadlineExceeded
 		}
 		return -1, err
 	}
@@ -276,4 +299,26 @@ func isGeminiUnavailable(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "HTTP 503") || strings.Contains(msg, "UNAVAILABLE")
+}
+
+func isGeminiFallback(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isTimeoutErr(err) {
+		return false
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "UNAVAILABLE") || strings.Contains(msg, "RESOURCE_EXHAUSTED") {
+		return true
+	}
+	if strings.Contains(msg, "HTTP 429") {
+		return true
+	}
+	for code := 500; code <= 599; code++ {
+		if strings.Contains(msg, fmt.Sprintf("HTTP %d", code)) {
+			return true
+		}
+	}
+	return false
 }
