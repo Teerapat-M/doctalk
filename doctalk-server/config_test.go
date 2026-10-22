@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoadConfigRequiresDatabaseURL(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
@@ -20,6 +23,10 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("MAX_UPLOAD_BYTES", "")
 	t.Setenv("STORAGE_DIR", "")
 	t.Setenv("GEMINI_BASE_URL", "")
+	t.Setenv("GEMINI_CHAT_MODEL", "")
+	t.Setenv("ASK_TOP_K", "")
+	t.Setenv("ASK_TOP_K_MAX", "")
+	t.Setenv("ASK_TIMEOUT_SECONDS", "")
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -41,6 +48,15 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.GeminiBaseURL != defaultGeminiBaseURL {
 		t.Fatalf("GeminiBaseURL = %q", cfg.GeminiBaseURL)
+	}
+	if cfg.GeminiChatModel != defaultChatModel {
+		t.Fatalf("GeminiChatModel = %q", cfg.GeminiChatModel)
+	}
+	if cfg.AskTopK != defaultAskTopK || cfg.AskTopKMax != defaultAskTopKMax {
+		t.Fatalf("k=%d max=%d", cfg.AskTopK, cfg.AskTopKMax)
+	}
+	if cfg.AskTimeout != time.Duration(defaultAskTimeoutSec)*time.Second {
+		t.Fatalf("AskTimeout=%s", cfg.AskTimeout)
 	}
 }
 

@@ -29,8 +29,10 @@ func run() error {
 	}
 
 	var embed Embedder
+	var chat ChatStreamer
 	if cfg.GeminiAPIKey != "" {
 		embed = newGeminiEmbedder(cfg)
+		chat = newGeminiChat(cfg)
 	}
 
 	s := &server{
@@ -39,6 +41,7 @@ func run() error {
 		cfg:     cfg,
 		store:   newDiskStorage(cfg.StorageDir),
 		embed:   embed,
+		chat:    chat,
 		extract: pdfExtractor{},
 	}
 	r := newRouter(s)

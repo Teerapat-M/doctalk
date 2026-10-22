@@ -21,6 +21,7 @@ export default defineConfig(({ mode }) => {
       proxy: {
         "/health": { target: apiUrl, changeOrigin: true },
         "/documents": { target: apiUrl, changeOrigin: true },
+        "/ask": { target: apiUrl, changeOrigin: true },
       },
     },
     test: {

@@ -24,6 +24,50 @@ func TestL2NormalizeAndVectorLiteral(t *testing.T) {
 	}
 }
 
+func TestGeminiEmbedQueryUsesRetrievalQuery(t *testing.T) {
+	const secret = "query-embed-key"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawQuery != "" {
+			t.Errorf("API key must not appear in the URL, got %q", r.URL.RawQuery)
+		}
+		if r.Header.Get("x-goog-api-key") != secret {
+			t.Errorf("missing API key header")
+		}
+		body, _ := io.ReadAll(r.Body)
+		var req embedRequestBody
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("json: %v", err)
+		}
+		if len(req.Requests) != 1 || req.Requests[0].TaskType != "RETRIEVAL_QUERY" {
+			t.Errorf("taskType=%v", req.Requests)
+		}
+		if req.Requests[0].OutputDimensionality != EmbeddingDim {
+			t.Errorf("dims=%d", req.Requests[0].OutputDimensionality)
+		}
+		vals := make([]float64, EmbeddingDim)
+		vals[0] = 1
+		_ = json.NewEncoder(w).Encode(map[string]any{"embeddings": []any{map[string]any{"values": vals}}})
+	}))
+	defer srv.Close()
+
+	g := &geminiEmbedder{
+		apiKey:     secret,
+		model:      defaultEmbedModel,
+		baseURL:    srv.URL,
+		http:       srv.Client(),
+		batchSize:  8,
+		maxRetries: 1,
+		sleep:      func(context.Context, time.Duration) error { return nil },
+	}
+	vec, err := g.EmbedQuery(context.Background(), "What is pgvector?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vec) != EmbeddingDim {
+		t.Fatalf("dim=%d", len(vec))
+	}
+}
+
 func TestGeminiEmbedBatchAnd429Retry(t *testing.T) {
 	const secret = "test-gemini-key-not-real"
 	var hits atomic.Int32

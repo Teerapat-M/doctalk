@@ -7,7 +7,7 @@ This repo is a monorepo:
 - `doctalk-server/` — HTTP API
 - `doctalk-client/` — web UI
 
-## Phase 2 (this PR)
+## Phase 2 — ingest
 
 - `POST /documents` — upload a PDF (10 MiB default cap, `%PDF-` magic sniff, not the filename)
 - Files go through a `Storage` interface (`DiskStorage` for local dev; swap in Supabase Storage at deploy time)
@@ -16,6 +16,48 @@ This repo is a monorepo:
 - Document status: `uploading` → `extracting` → `embedding` → `done`, or `failed` with an error message
 - `GET /documents` and `GET /documents/:id` (status + chunk count)
 - Gemini is mocked in tests; CI does not need `GEMINI_API_KEY`
+
+## Phase 3 — ask (this PR)
+
+`POST /ask` answers a question over chosen documents. The question is embedded with `gemini-embedding-001` (768-d, `RETRIEVAL_QUERY`), then pgvector does top-k cosine retrieval (`<=>`) scoped to those docs. The grounded prompt tells Gemini to answer only from the retrieved chunks, say the answer is not in the document when they do not cover the question, and reply in the question's language (Thai or English). The chat model is `GEMINI_CHAT_MODEL` (default `gemini-3.8-flash`, free tier).
+
+### Request
+
+```
+POST /ask
+Content-Type: application/json
+
+{
+  "question": "What dimensionality are the embeddings?",
+  "document_ids": ["<uuid>", "<uuid>"],
+  "k": 5
+}
+```
+
+`k` is optional. Default `ASK_TOP_K` (5), hard cap `ASK_TOP_K_MAX` (20). `ASK_TIMEOUT_SECONDS` (60) bounds the whole request. Client disconnect cancels the upstream Gemini call.
+
+Pre-stream failures are JSON (`400` / `404` / `409` / `503` / `504` / `502`). On success the response is **SSE** (`text/event-stream`).
+
+### SSE events
+
+Delta (token/chunk) events, then one final citations event:
+
+```
+event: delta
+data: {"text":"The embeddings are 768-dimensional."}
+
+event: final
+data: {"citations":[{"document_id":"<uuid>","page_number":2,"chunk_id":"<uuid>","snippet":"…"}]}
+```
+
+If generation fails after the stream has started:
+
+```
+event: error
+data: {"error":"gemini chat: HTTP 429: RESOURCE_EXHAUSTED: …"}
+```
+
+Errors keep Gemini's status and message with the API key stripped (including `?key=`). The key is sent only as `x-goog-api-key`, never as a query parameter.
 
 ### Thai-aware chunking
 
@@ -68,6 +110,7 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    set CORS_ORIGIN=http://localhost:5174
    set GEMINI_API_KEY=your-free-tier-key
    set GEMINI_BASE_URL=https://generativelanguage.googleapis.com
+   set GEMINI_CHAT_MODEL=gemini-3.8-flash
    cd doctalk-server && go run .
    ```
 
@@ -79,6 +122,7 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    export CORS_ORIGIN=http://localhost:5174
    export GEMINI_API_KEY=your-free-tier-key
    export GEMINI_BASE_URL=https://generativelanguage.googleapis.com
+   export GEMINI_CHAT_MODEL=gemini-3.8-flash
    cd doctalk-server && go run .
    ```
 
@@ -92,7 +136,7 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    npm run dev
    ```
 
-   Vite listens on `VITE_PORT` (5174) and proxies `/health` and `/documents` to `VITE_API_URL`.
+   Vite listens on `VITE_PORT` (5174) and proxies `/health`, `/documents`, and `/ask` to `VITE_API_URL`.
 
 Use the Gemini **free tier**. Do not put the key in git or CI.
 
@@ -106,15 +150,51 @@ curl -s http://localhost:8081/documents/<id>
 
 `POST` returns **202** and processing continues in the background. Poll `GET /documents/:id` until `status` is `done` or `failed`. Embed failures store Gemini's HTTP status and error message, with the API key stripped (including `?key=` query values).
 
+### Ask
+
+```
+curl -N -sS -H "Content-Type: application/json" ^
+  -d "{\"question\":\"What dimensionality are the embeddings?\",\"document_ids\":[\"<id>\"]}" ^
+  http://localhost:8081/ask
+```
+
+Unix: drop the `^` line continuations.
+
 ### Smoke test (real Gemini key)
 
-With the stack running (`docker compose up --build` or `go run .` plus Postgres) and `GEMINI_API_KEY` set in the environment or a repo-root `.env`:
+Postgres with pgvector on **5435**, API on **8081**, no Docker for the server:
+
+Windows cmd.exe (Postgres already listening on 5435):
+
+```
+set DATABASE_URL=postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable
+set API_PORT=8081
+set GEMINI_API_KEY=your-free-tier-key
+set GEMINI_BASE_URL=https://generativelanguage.googleapis.com
+set GEMINI_CHAT_MODEL=gemini-3.8-flash
+cd doctalk-server && go run .
+```
+
+Unix:
+
+```
+export DATABASE_URL=postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable
+export API_PORT=8081
+export GEMINI_API_KEY=your-free-tier-key
+export GEMINI_BASE_URL=https://generativelanguage.googleapis.com
+export GEMINI_CHAT_MODEL=gemini-3.8-flash
+cd doctalk-server && go run .
+```
+
+In another terminal, with the same `GEMINI_API_KEY` (or a repo-root `.env`):
 
 ```
 bash doctalk-server/scripts/smoke.sh
 ```
 
-The script uploads `testdata/english.pdf` and `testdata/thai.pdf`, polls until `done`/`failed`, then checks every chunk has `page_number` and `vector_dims(embedding) = 768`. It never prints the API key. Needs `curl`, `python3`, and either `psql` (`DATABASE_URL`) or `docker compose exec` to the `db` service. Exits non-zero on failure.
+The script uploads `testdata/english.pdf` and `testdata/thai.pdf`, polls until `done`/`failed`, checks every chunk has `page_number` and `vector_dims(embedding) = 768`, then `POST /ask` and prints the streamed answer plus citations. It never prints the API key. Needs `curl`, `python3`, and either `psql` (`DATABASE_URL`) or `docker compose exec` to the `db` service. Exits non-zero on failure.
+
+`docker compose up --build` is still fine if you prefer containers.
 
 ## Makefile
 
@@ -148,8 +228,8 @@ CI runs both, with a `pgvector/pgvector:pg16` service for the server job. Gemini
 ## Roadmap
 
 - **Phase 1:** health, migrations, local Postgres, CI. (done)
-- **Phase 2:** PDF upload, text extraction, Thai-aware chunking, embedding. (this PR)
-- **Phase 3:** ask endpoint with top-k retrieval, Gemini answers with citations, SSE streaming.
+- **Phase 2:** PDF upload, text extraction, Thai-aware chunking, embedding.
+- **Phase 3:** ask endpoint with top-k retrieval, Gemini answers with citations, SSE streaming. (this PR)
 - **Phase 4:** chat UI.
 - **Phase 5:** guest auth and rate limiting.
 - **Phase 6:** deploy (Render server, Vercel client, Supabase Postgres, all free tiers).

@@ -27,6 +27,7 @@ type fakeEmbedder struct {
 	dim   int
 	err   error
 	calls int
+	query []float32
 }
 
 func (f *fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
@@ -46,6 +47,24 @@ func (f *fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, er
 		out[i] = v
 	}
 	return out, nil
+}
+
+func (f *fakeEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	if len(f.query) > 0 {
+		if f.err != nil {
+			return nil, f.err
+		}
+		out := append([]float32(nil), f.query...)
+		return out, nil
+	}
+	vecs, err := f.Embed(ctx, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	if len(vecs) == 0 {
+		return nil, errString("empty query embed")
+	}
+	return vecs[0], nil
 }
 
 func pdfForm(t *testing.T, filename string, body []byte) (*bytes.Buffer, string) {

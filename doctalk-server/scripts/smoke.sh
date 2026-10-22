@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke-test PDF ingest against a running DocTalk stack.
+# Smoke-test PDF ingest and ask against a running DocTalk stack.
 # Requires GEMINI_API_KEY (never printed) and a reachable API + Postgres.
 set -euo pipefail
 
@@ -103,10 +103,75 @@ check_chunks() {
 	echo "$label $n chunk(s), page_number set, vector_dims=768"
 }
 
+ask() {
+	question=$1
+	id=$2
+	echo "asking ($id): $question" >&2
+	payload=$(python3 -c 'import json,sys; print(json.dumps({"question":sys.argv[1],"document_ids":[sys.argv[2]]}))' "$question" "$id")
+	out=$(mktemp)
+	code=$(curl -sS -N --max-time 90 -o "$out" -w '%{http_code}' \
+		-H 'Content-Type: application/json' -d "$payload" "$api/ask") || true
+	if [ -n "${GEMINI_API_KEY:-}" ] && grep -F -- "$GEMINI_API_KEY" "$out" >/dev/null 2>&1; then
+		echo "ask leaked GEMINI_API_KEY" >&2
+		rm -f "$out"
+		exit 1
+	fi
+	if [ "$code" != "200" ]; then
+		echo "ask HTTP $code: $(cat "$out")" >&2
+		rm -f "$out"
+		exit 1
+	fi
+	python3 -c '
+import json, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+event = None
+answer = []
+citations = []
+err = ""
+for line in text.splitlines():
+    if line.startswith("event:"):
+        event = line[6:].strip()
+    elif line.startswith("data:"):
+        raw = line[5:].strip()
+        if not raw:
+            continue
+        data = json.loads(raw)
+        if event == "delta":
+            answer.append(data.get("text") or "")
+        elif event == "final":
+            citations = data.get("citations") or []
+        elif event == "error":
+            err = data.get("error") or "error"
+if err:
+    sys.stderr.write("ask error: %s\n" % err)
+    sys.exit(1)
+ans = "".join(answer).strip()
+if not ans:
+    sys.stderr.write("ask returned empty answer\n")
+    sys.exit(1)
+print(ans)
+print("citations:")
+if not citations:
+    sys.stderr.write("ask returned no citations\n")
+    sys.exit(1)
+for c in citations:
+    cid = c.get("chunk_id") or ""
+    page = c.get("page_number")
+    snippet = c.get("snippet") or ""
+    if not cid or not page:
+        sys.stderr.write("citation missing chunk_id or page_number\n")
+        sys.exit(1)
+    print("%s page %s chunk %s %s" % (c.get("document_id"), page, cid, snippet))
+' "$out"
+	rm -f "$out"
+}
+
 en_id=$(upload "$server_dir/testdata/english.pdf" english.pdf)
 th_id=$(upload "$server_dir/testdata/thai.pdf" thai.pdf)
 poll "$en_id" english.pdf
 poll "$th_id" thai.pdf
 check_chunks "$en_id" english.pdf
 check_chunks "$th_id" thai.pdf
+ask "What dimensionality are the Gemini embedding vectors?" "$en_id"
+ask "กรุงเทพมหานครเป็นเมืองหลวงของประเทศใด" "$th_id"
 echo "smoke ok"

@@ -14,6 +14,7 @@ type server struct {
 	cfg     config
 	store   Storage
 	embed   Embedder
+	chat    ChatStreamer
 	extract Extractor
 	wg      sync.WaitGroup
 }
@@ -26,6 +27,7 @@ func newRouter(s *server) *gin.Engine {
 	r.POST("/documents", s.uploadDocument)
 	r.GET("/documents", s.listDocuments)
 	r.GET("/documents/:id", s.getDocument)
+	r.POST("/ask", s.ask)
 	return r
 }
 
