@@ -30,22 +30,13 @@ func contentTypeForKind(kind string) string {
 }
 
 func (s *server) ingestDocument(c *gin.Context) {
-	if s.embed == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "GEMINI_API_KEY is not configured"})
-		return
-	}
-	if s.db == nil || s.store == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "server is not configured"})
-		return
-	}
 	id := c.Param("id")
 	if id == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing id"})
 		return
 	}
 	var req ingestRequest
-	if err := json.NewDecoder(io.LimitReader(c.Request.Body, 1<<16)).Decode(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
+	if !requireJSONBody(c, &req) {
 		return
 	}
 	req.Sheet = strings.TrimSpace(req.Sheet)
@@ -57,13 +48,25 @@ func (s *server) ingestDocument(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "map exactly one of columns.content or columns.question"})
 		return
 	}
+	if !validUUID(id) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid document_id"})
+		return
+	}
+	if s.embed == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "GEMINI_API_KEY is not configured"})
+		return
+	}
+	if s.db == nil || s.store == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "server is not configured"})
+		return
+	}
 
 	ctx := c.Request.Context()
 	var kind, key, status string
 	err := s.db.QueryRowContext(ctx, `
 		SELECT source_kind, storage_key, status FROM documents WHERE id=$1
 	`, id).Scan(&kind, &key, &status)
-	if err == sql.ErrNoRows || isBadUUID(err) {
+	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}

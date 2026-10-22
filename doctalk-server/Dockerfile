@@ -11,9 +11,9 @@ RUN apk add --no-cache ca-certificates \
     && chown nobody:nobody /data/uploads
 WORKDIR /app
 COPY --from=build /server /server
-ENV PORT=8081
+ENV PORT=8181
 ENV STORAGE_DIR=/data/uploads
 ENV GIN_MODE=release
-EXPOSE 8081
+EXPOSE 8181
 USER nobody
 ENTRYPOINT ["/server"]

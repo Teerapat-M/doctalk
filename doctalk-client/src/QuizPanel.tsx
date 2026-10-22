@@ -160,7 +160,7 @@ export default function QuizPanel({ baseUrl = apiBase }: Props) {
             <option value="">Select a document</option>
             {docs.map((d) => (
               <option key={d.id} value={d.id}>
-                {d.filename} ({d.status})
+                {d.filename} ({documentCountLabel(d)})
               </option>
             ))}
           </select>
@@ -338,4 +338,14 @@ export default function QuizPanel({ baseUrl = apiBase }: Props) {
 function pickHeader(headers: string[], names: string[]): string {
   const lower = names.map((n) => n.toLowerCase());
   return headers.find((h) => lower.includes(h.toLowerCase())) ?? headers[0] ?? "";
+}
+
+function documentCountLabel(d: DocumentRecord): string {
+  if (d.row_count != null) {
+    return `${d.status}, ${d.row_count} rows`;
+  }
+  if (d.page_count != null) {
+    return `${d.status}, ${d.page_count} pages`;
+  }
+  return d.status;
 }

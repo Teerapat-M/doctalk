@@ -20,7 +20,7 @@ if [ -z "${GEMINI_API_KEY:-}" ]; then
 	exit 1
 fi
 
-api="${VITE_API_URL:-http://localhost:${API_PORT:-8081}}"
+api="${VITE_API_URL:-http://localhost:${API_PORT:-8181}}"
 api="${api%/}"
 
 json_field() {

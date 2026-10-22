@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"math"
 	"math/rand"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -56,13 +57,21 @@ type geminiQuizOut struct {
 
 func (s *server) generateQuiz(c *gin.Context) {
 	var req quizRequest
-	if err := json.NewDecoder(io.LimitReader(c.Request.Body, 1<<20)).Decode(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
+	if !requireJSONBody(c, &req) {
 		return
 	}
 	docIDs := uniqueNonEmpty(req.DocumentIDs)
 	if len(docIDs) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "document_ids is required"})
+		return
+	}
+	if invalidDocumentIDs(docIDs) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid document_id"})
+		return
+	}
+	chunkIDs := uniqueNonEmpty(req.ChunkIDs)
+	if invalidDocumentIDs(chunkIDs) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chunk_id"})
 		return
 	}
 	n := req.N
@@ -102,6 +111,10 @@ func (s *server) generateQuiz(c *gin.Context) {
 	defer cancel()
 
 	if err := s.ensureAskDocs(ctx, docIDs); err != nil {
+		if errors.Is(err, errAskDocsBadID) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid document_id"})
+			return
+		}
 		if errors.Is(err, errAskDocsNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "document not found"})
 			return
@@ -114,7 +127,7 @@ func (s *server) generateQuiz(c *gin.Context) {
 		return
 	}
 
-	chunks, err := s.loadQuizChunks(ctx, docIDs, uniqueNonEmpty(req.ChunkIDs), n)
+	chunks, err := s.loadQuizChunks(ctx, docIDs, chunkIDs, n)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load chunks"})
 		return
@@ -127,7 +140,7 @@ func (s *server) generateQuiz(c *gin.Context) {
 	var questions []quizQuestionJSON
 	switch mode {
 	case "from_columns":
-		questions, err = buildQuizFromColumns(chunks, n)
+		questions, err = s.buildQuizFromColumns(ctx, chunks, n)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
@@ -153,7 +166,7 @@ func (s *server) loadQuizChunks(ctx context.Context, docIDs, chunkIDs []string, 
 	}
 	q := `
 		SELECT c.id::text, c.document_id::text, c.page_number, c.sheet_name, c.row_number,
-		       c.content, c.question, c.answer, c.explanation
+		       c.content, c.question, c.answer, c.explanation, c.embedding::text
 		FROM chunks c
 		WHERE c.document_id = ANY($1::uuid[])
 		  AND c.embedding IS NOT NULL
@@ -177,15 +190,25 @@ func (s *server) loadQuizChunks(ctx context.Context, docIDs, chunkIDs []string, 
 	out := make([]retrievedChunk, 0)
 	for rows.Next() {
 		var ch retrievedChunk
-		if err := rows.Scan(&ch.ID, &ch.DocumentID, &ch.PageNumber, &ch.SheetName, &ch.RowNumber, &ch.Content, &ch.Question, &ch.Answer, &ch.Explanation); err != nil {
+		var emb string
+		if err := rows.Scan(&ch.ID, &ch.DocumentID, &ch.PageNumber, &ch.SheetName, &ch.RowNumber, &ch.Content, &ch.Question, &ch.Answer, &ch.Explanation, &emb); err != nil {
 			return nil, err
 		}
+		ch.Embedding = parseVectorLiteral(emb)
 		out = append(out, ch)
 	}
 	return out, rows.Err()
 }
 
+func (s *server) buildQuizFromColumns(ctx context.Context, chunks []retrievedChunk, n int) ([]quizQuestionJSON, error) {
+	return assembleQuizFromColumns(ctx, chunks, n, s.quiz)
+}
+
 func buildQuizFromColumns(chunks []retrievedChunk, n int) ([]quizQuestionJSON, error) {
+	return assembleQuizFromColumns(context.Background(), chunks, n, nil)
+}
+
+func assembleQuizFromColumns(ctx context.Context, chunks []retrievedChunk, n int, quiz Quizzer) ([]quizQuestionJSON, error) {
 	qa := make([]retrievedChunk, 0, len(chunks))
 	for _, ch := range chunks {
 		if strings.TrimSpace(ch.Question) != "" && strings.TrimSpace(ch.Answer) != "" {
@@ -201,15 +224,18 @@ func buildQuizFromColumns(chunks []retrievedChunk, n int) ([]quizQuestionJSON, e
 	rand.Shuffle(len(qa), func(i, j int) { qa[i], qa[j] = qa[j], qa[i] })
 	selected := qa[:n]
 
-	pool := uniqueAnswers(qa)
+	extras := loadGeminiDistractors(ctx, quiz, selected)
 	out := make([]quizQuestionJSON, 0, n)
 	for _, ch := range selected {
 		correct := strings.TrimSpace(ch.Answer)
-		distractors := pickDistractors(pool, correct, 3)
+		distractors := extras[strings.TrimSpace(ch.Question)]
+		if len(distractors) < 3 {
+			distractors = pickDistractors(qa, ch, 3)
+		}
 		if len(distractors) < 3 {
 			return nil, fmt.Errorf("need at least 4 distinct answers to build options from columns")
 		}
-		opts, letter := shuffleOptions(correct, distractors)
+		opts, letter := shuffleOptions(correct, distractors[:3])
 		expl := strings.TrimSpace(ch.Explanation)
 		if expl == "" {
 			expl = correct
@@ -225,38 +251,136 @@ func buildQuizFromColumns(chunks []retrievedChunk, n int) ([]quizQuestionJSON, e
 	return out, nil
 }
 
-func uniqueAnswers(chunks []retrievedChunk) []string {
+func pickDistractors(pool []retrievedChunk, correct retrievedChunk, n int) []string {
+	want := strings.ToLower(strings.TrimSpace(correct.Answer))
+	type scored struct {
+		text  string
+		score float64
+		idx   int
+	}
 	seen := map[string]struct{}{}
-	var out []string
-	for _, ch := range chunks {
+	cands := make([]scored, 0, len(pool))
+	for i, ch := range pool {
 		a := strings.TrimSpace(ch.Answer)
-		if a == "" {
+		key := strings.ToLower(a)
+		if a == "" || key == want {
 			continue
 		}
-		key := strings.ToLower(a)
 		if _, ok := seen[key]; ok {
 			continue
 		}
 		seen[key] = struct{}{}
-		out = append(out, a)
+		cands = append(cands, scored{text: a, score: cosineSim(correct.Embedding, ch.Embedding), idx: i})
+	}
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].score != cands[j].score {
+			return cands[i].score > cands[j].score
+		}
+		return cands[i].idx < cands[j].idx
+	})
+	out := make([]string, 0, n)
+	for _, c := range cands {
+		out = append(out, c.text)
+		if len(out) == n {
+			break
+		}
 	}
 	return out
 }
 
-func pickDistractors(pool []string, correct string, n int) []string {
-	want := strings.ToLower(strings.TrimSpace(correct))
-	cands := make([]string, 0, len(pool))
-	for _, a := range pool {
-		if strings.ToLower(a) == want {
-			continue
+func cosineSim(a, b []float32) float64 {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0
+	}
+	var dot float64
+	for i := range a {
+		dot += float64(a[i]) * float64(b[i])
+	}
+	if math.IsNaN(dot) {
+		return 0
+	}
+	return dot
+}
+
+type typedQuizzer interface {
+	GenerateTypedJSON(ctx context.Context, system, user string, schema map[string]any) ([]byte, error)
+}
+
+func distractorResponseSchema() map[string]any {
+	return map[string]any{
+		"type": "OBJECT",
+		"properties": map[string]any{
+			"items": map[string]any{
+				"type": "ARRAY",
+				"items": map[string]any{
+					"type": "OBJECT",
+					"properties": map[string]any{
+						"distractors": map[string]any{
+							"type":  "ARRAY",
+							"items": map[string]any{"type": "STRING"},
+						},
+					},
+					"required": []string{"distractors"},
+				},
+			},
+		},
+		"required": []string{"items"},
+	}
+}
+
+func loadGeminiDistractors(ctx context.Context, quiz Quizzer, selected []retrievedChunk) map[string][]string {
+	out := map[string][]string{}
+	typed, ok := quiz.(typedQuizzer)
+	if !ok || len(selected) == 0 {
+		return out
+	}
+	system := `You write wrong answers of the same type as each correct answer.
+If the answer is a color, other colors; a city, other cities; a currency, other currencies; a number, other numbers.
+Match the language. Do not repeat the correct answer. Do not use unrelated types.`
+	var b strings.Builder
+	b.WriteString("Return JSON {\"items\":[{\"distractors\":[\"...\",\"...\",\"...\"]}] } with one item per question, three distractors each.\n")
+	for i, ch := range selected {
+		fmt.Fprintf(&b, "%d. Question: %s\nCorrect: %s\n", i+1, strings.TrimSpace(ch.Question), strings.TrimSpace(ch.Answer))
+	}
+	raw, err := typed.GenerateTypedJSON(ctx, system, b.String(), distractorResponseSchema())
+	if err != nil {
+		return out
+	}
+	var parsed struct {
+		Items []struct {
+			Distractors []string `json:"distractors"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(extractJSONObject(raw), &parsed); err != nil {
+		return out
+	}
+	if len(parsed.Items) != len(selected) {
+		return out
+	}
+	for i, ch := range selected {
+		want := strings.ToLower(strings.TrimSpace(ch.Answer))
+		seen := map[string]struct{}{want: {}}
+		var ds []string
+		for _, d := range parsed.Items[i].Distractors {
+			d = strings.TrimSpace(d)
+			key := strings.ToLower(d)
+			if d == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			ds = append(ds, d)
+			if len(ds) == 3 {
+				break
+			}
 		}
-		cands = append(cands, a)
+		if len(ds) == 3 {
+			out[strings.TrimSpace(ch.Question)] = ds
+		}
 	}
-	rand.Shuffle(len(cands), func(i, j int) { cands[i], cands[j] = cands[j], cands[i] })
-	if len(cands) > n {
-		cands = cands[:n]
-	}
-	return cands
+	return out
 }
 
 func shuffleOptions(correct string, distractors []string) (quizOptionMap, string) {
