@@ -12,7 +12,8 @@ export type DocumentRecord = {
   sheet_name?: string;
   sheets?: SheetInfo[];
   chunk_count: number;
-  page_count: number;
+  page_count?: number | null;
+  row_count?: number | null;
   error_message?: string | null;
 };
 

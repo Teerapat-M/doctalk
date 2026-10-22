@@ -208,8 +208,11 @@ func TestDocumentIngestWithMockGemini(t *testing.T) {
 	if got.Status != statusDone {
 		t.Fatalf("status=%s err=%v body=%s", got.Status, got.ErrorMessage, w.Body.String())
 	}
-	if got.ChunkCount != 2 || got.PageCount != 2 {
-		t.Fatalf("chunks=%d pages=%d", got.ChunkCount, got.PageCount)
+	if got.ChunkCount != 2 || got.PageCount == nil || *got.PageCount != 2 {
+		t.Fatalf("chunks=%d pages=%v", got.ChunkCount, got.PageCount)
+	}
+	if got.RowCount != nil {
+		t.Fatalf("pdf row_count=%v", *got.RowCount)
 	}
 	if embed.calls < 1 {
 		t.Fatal("embedder was not called")
@@ -309,8 +312,14 @@ func openTestDB(t *testing.T) *sql.DB {
 func TestGetDocumentWithoutDBIs500(t *testing.T) {
 	r := newRouter(&server{cfg: config{CORSOrigin: "*"}})
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/documents/abc", nil))
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/documents/00000000-0000-0000-0000-000000000001", nil))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status=%d", w.Code)
+	}
+
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/documents/abc", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("malformed id status=%d", w.Code)
 	}
 }

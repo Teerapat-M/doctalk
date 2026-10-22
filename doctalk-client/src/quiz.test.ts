@@ -8,8 +8,8 @@ afterEach(() => {
 
 describe("quizUrl", () => {
   it("joins /quiz onto the API base", () => {
-    expect(quizUrl("http://localhost:8081")).toBe("http://localhost:8081/quiz");
-    expect(quizUrl("http://localhost:8081/")).toBe("http://localhost:8081/quiz");
+    expect(quizUrl("http://localhost:8181")).toBe("http://localhost:8181/quiz");
+    expect(quizUrl("http://localhost:8181/")).toBe("http://localhost:8181/quiz");
   });
 });
 
@@ -61,14 +61,14 @@ describe("generateQuiz", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await generateQuiz("http://localhost:8081", {
+    const result = await generateQuiz("http://localhost:8181", {
       document_ids: ["d"],
       n: 4,
       mode: "from_columns",
     });
     expect(result.questions).toHaveLength(1);
     expect(result.questions[0].correct).toBe("A");
-    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8081/quiz", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8181/quiz", expect.objectContaining({ method: "POST" }));
   });
 
   it("surfaces API errors", async () => {
@@ -81,7 +81,7 @@ describe("generateQuiz", () => {
       })),
     );
     await expect(
-      generateQuiz("http://localhost:8081", { document_ids: ["d"], n: 99 }),
+      generateQuiz("http://localhost:8181", { document_ids: ["d"], n: 99 }),
     ).rejects.toThrow("n is capped at 20");
   });
 });

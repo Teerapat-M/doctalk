@@ -8,14 +8,15 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, repoRoot, "");
-  const apiPort = env.API_PORT || "8081";
-  const vitePort = Number(env.VITE_PORT || "5174");
+  const apiPort = env.API_PORT || "8181";
+  const vitePort = Number(env.VITE_PORT || "5191");
   const apiUrl = env.VITE_API_URL || `http://localhost:${apiPort}`;
 
   return {
     envDir: repoRoot,
     plugins: [react()],
     server: {
+      host: "127.0.0.1",
       port: vitePort,
       strictPort: true,
       proxy: {

@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -19,11 +18,12 @@ type geminiQuiz struct {
 	baseURL    string
 	http       *http.Client
 	maxRetries int
+	budget     time.Duration
 	sleep      func(context.Context, time.Duration) error
-	mu         sync.Mutex
+	limiter    *slotLimiter
 }
 
-func newGeminiQuiz(cfg config) *geminiQuiz {
+func newGeminiQuiz(cfg config, lim *slotLimiter) *geminiQuiz {
 	base := cfg.GeminiBaseURL
 	if base == "" {
 		base = defaultGeminiBaseURL
@@ -35,13 +35,19 @@ func newGeminiQuiz(cfg config) *geminiQuiz {
 	if model == "" {
 		model = defaultChatModel
 	}
+	budget := cfg.GeminiRetryBudget
+	if budget <= 0 {
+		budget = defaultGeminiRetryBudget
+	}
 	return &geminiQuiz{
 		apiKey:     cfg.GeminiAPIKey,
 		model:      model,
 		baseURL:    strings.TrimRight(base, "/"),
 		http:       &http.Client{Timeout: 90 * time.Second},
-		maxRetries: 6,
+		maxRetries: defaultGeminiAttempts,
+		budget:     budget,
 		sleep:      defaultSleep,
+		limiter:    lim,
 	}
 }
 
@@ -88,6 +94,10 @@ func quizResponseSchema() map[string]any {
 }
 
 func (g *geminiQuiz) GenerateJSON(ctx context.Context, system, user string) ([]byte, error) {
+	return g.GenerateTypedJSON(ctx, system, user, quizResponseSchema())
+}
+
+func (g *geminiQuiz) GenerateTypedJSON(ctx context.Context, system, user string, schema map[string]any) ([]byte, error) {
 	payload, err := json.Marshal(map[string]any{
 		"systemInstruction": map[string]any{
 			"parts": []map[string]string{{"text": system}},
@@ -99,43 +109,31 @@ func (g *geminiQuiz) GenerateJSON(ctx context.Context, system, user string) ([]b
 			"temperature":      0.4,
 			"maxOutputTokens":  4096,
 			"responseMimeType": "application/json",
-			"responseSchema":   quizResponseSchema(),
+			"responseSchema":   schema,
 		},
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	var last error
-	delay := 500 * time.Millisecond
-	attempts := g.maxRetries
-	if attempts < 1 {
-		attempts = 1
+	var out []byte
+	policy := geminiRetry{
+		attempts: g.maxRetries,
+		budget:   g.budget,
+		sleep:    g.sleep,
+		limiter:  g.limiter,
 	}
-	for attempt := 0; attempt < attempts; attempt++ {
+	err = policy.do(ctx, func() (time.Duration, error) {
 		body, retryAfter, err := g.doGenerate(ctx, payload)
 		if err == nil {
-			return body, nil
+			out = body
 		}
-		last = err
-		if retryAfter < 0 {
-			return nil, err
-		}
-		wait := delay
-		if retryAfter > 0 {
-			wait = retryAfter
-		}
-		if err := g.sleep(ctx, wait); err != nil {
-			return nil, err
-		}
-		if delay < 16*time.Second {
-			delay *= 2
-		}
+		return retryAfter, err
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil, g.errf("gemini quiz: retries exhausted: %v", last)
+	return out, nil
 }
 
 func (g *geminiQuiz) doGenerate(ctx context.Context, payload []byte) ([]byte, time.Duration, error) {
