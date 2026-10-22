@@ -22,6 +22,13 @@ func TestL2NormalizeAndVectorLiteral(t *testing.T) {
 	if lit != "[1,2]" {
 		t.Fatalf("literal = %q", lit)
 	}
+	parsed := parseVectorLiteral("[1,2]")
+	if len(parsed) != 2 || parsed[0] != 1 || parsed[1] != 2 {
+		t.Fatalf("parse %v", parsed)
+	}
+	if parseVectorLiteral("") != nil {
+		t.Fatal("empty literal")
+	}
 }
 
 func TestGeminiEmbedQueryUsesRetrievalQuery(t *testing.T) {

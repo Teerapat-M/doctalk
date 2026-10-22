@@ -102,26 +102,32 @@ func TestBuildQuizFromColumns(t *testing.T) {
 	}
 }
 
+func postJSON(r http.Handler, path, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
 func TestQuizCapsNAndRequiresDocs(t *testing.T) {
 	r := newRouter(&server{
 		cfg:   config{CORSOrigin: "*", QuizNMax: 20, AskTimeout: time.Minute},
 		embed: &fakeEmbedder{},
 		quiz:  &fakeQuiz{bodies: [][]byte{quizJSONFixture(t, 1, 1)}},
 	})
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/quiz", strings.NewReader(`{"document_ids":["x"],"n":99}`)))
+	id := "00000000-0000-0000-0000-000000000001"
+	w := postJSON(r, "/quiz", fmt.Sprintf(`{"document_ids":[%q],"n":99}`, id))
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "capped") {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/quiz", strings.NewReader(`{"n":2}`)))
+	w = postJSON(r, "/quiz", `{"n":2}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("missing docs status=%d", w.Code)
 	}
 
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/quiz", strings.NewReader(`{"document_ids":["x"],"mode":"nope"}`)))
+	w = postJSON(r, "/quiz", fmt.Sprintf(`{"document_ids":[%q],"mode":"nope"}`, id))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("bad mode status=%d", w.Code)
 	}
@@ -129,10 +135,126 @@ func TestQuizCapsNAndRequiresDocs(t *testing.T) {
 
 func TestQuizRequiresGemini(t *testing.T) {
 	r := newRouter(&server{cfg: config{CORSOrigin: "*"}})
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/quiz", strings.NewReader(`{"document_ids":["x"],"n":1}`)))
+	w := postJSON(r, "/quiz", `{"document_ids":["00000000-0000-0000-0000-000000000001"],"n":1}`)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d", w.Code)
+	}
+}
+
+func TestQuizAndIngestJSONValidation(t *testing.T) {
+	r := newRouter(&server{cfg: config{CORSOrigin: "*", QuizNMax: 20}})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/quiz", strings.NewReader(`{"document_ids":["00000000-0000-0000-0000-000000000001"]}`)))
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("quiz missing content-type status=%d", w.Code)
+	}
+
+	w = postJSON(r, "/quiz", `{"document_ids":["not-a-uuid"]}`)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid document_id") {
+		t.Fatalf("quiz malformed id status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	w = postJSON(r, "/quiz", `{"document_ids":["00000000-0000-0000-0000-000000000001"]} extra`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("quiz trailing junk status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/documents/not-a-uuid/ingest", strings.NewReader(`{"sheet":"s","columns":{"question":"q"}}`)))
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("ingest missing content-type status=%d", w.Code)
+	}
+
+	w = postJSON(r, "/documents/not-a-uuid/ingest", `{"sheet":"s","columns":{"question":"q"}}`)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid document_id") {
+		t.Fatalf("ingest malformed id status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	w = postJSON(r, "/documents/00000000-0000-0000-0000-000000000001/ingest", `{"sheet":"s","columns":{"question":"q"}} extra`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("ingest trailing junk status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestPickDistractorsByEmbeddingSimilarity(t *testing.T) {
+	blue := retrievedChunk{Question: "แถบกลาง?", Answer: "น้ำเงิน", Embedding: unitVec(0)}
+	red := retrievedChunk{Question: "สีอื่น?", Answer: "แดง", Embedding: nearVec(0, 1)}
+	white := retrievedChunk{Question: "สีธง?", Answer: "ขาว", Embedding: nearVec(0, 2)}
+	green := retrievedChunk{Question: "ใบไม้?", Answer: "เขียว", Embedding: nearVec(0, 3)}
+	baht := retrievedChunk{Question: "สกุลเงิน?", Answer: "บาท", Embedding: unitVec(100)}
+	cnx := retrievedChunk{Question: "ดอย?", Answer: "เชียงใหม่", Embedding: unitVec(200)}
+	got := pickDistractors([]retrievedChunk{blue, baht, cnx, red, white, green}, blue, 3)
+	if len(got) != 3 {
+		t.Fatalf("distractors=%v", got)
+	}
+	want := map[string]struct{}{"แดง": {}, "ขาว": {}, "เขียว": {}}
+	for _, d := range got {
+		if _, ok := want[d]; !ok {
+			t.Fatalf("unrelated distractor %q in %v", d, got)
+		}
+	}
+}
+
+type fakeTypedQuiz struct {
+	fakeQuiz
+}
+
+func (f *fakeTypedQuiz) GenerateTypedJSON(ctx context.Context, system, user string, schema map[string]any) ([]byte, error) {
+	return f.GenerateJSON(ctx, system, user)
+}
+
+func TestGeminiSameTypeDistractors(t *testing.T) {
+	chunks := []retrievedChunk{{
+		ID: "1", DocumentID: "d", SheetName: "คำถาม", RowNumber: 2,
+		Question: "สีของธงชาติไทยแถบกลางคือสีใด", Answer: "น้ำเงิน", Content: "q",
+	}}
+	quiz := &fakeTypedQuiz{fakeQuiz: fakeQuiz{bodies: [][]byte{[]byte(`{"items":[{"distractors":["แดง","ขาว","เขียว"]}]}`)}}}
+	got, err := assembleQuizFromColumns(context.Background(), chunks, 1, quiz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("%+v", got)
+	}
+	opts := []string{got[0].Options.A, got[0].Options.B, got[0].Options.C, got[0].Options.D}
+	seen := map[string]struct{}{}
+	for _, o := range opts {
+		seen[o] = struct{}{}
+	}
+	for _, want := range []string{"น้ำเงิน", "แดง", "ขาว", "เขียว"} {
+		if _, ok := seen[want]; !ok {
+			t.Fatalf("missing %q in %v", want, opts)
+		}
+	}
+}
+
+func nearVec(hot, extra int) []float32 {
+	v := unitVec(hot)
+	if extra >= 0 && extra < len(v) && extra != hot {
+		v[extra] = 0.05
+		l2normalize(v)
+	}
+	return v
+}
+
+func TestQuizUnknownDocumentIs404(t *testing.T) {
+	db := openTestDB(t)
+	r := newRouter(&server{
+		db:    db,
+		cfg:   config{CORSOrigin: "*", QuizNMax: 20, AskTimeout: time.Minute},
+		quiz:  &fakeQuiz{bodies: [][]byte{quizJSONFixture(t, 1, 1)}},
+		embed: &fakeEmbedder{},
+		store: newMemStorage(),
+	})
+	w := postJSON(r, "/quiz", `{"document_ids":["00000000-0000-0000-0000-000000000099"],"n":1}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	w = postJSON(r, "/documents/00000000-0000-0000-0000-000000000099/ingest", `{"sheet":"s","columns":{"question":"q"}}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("ingest status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -177,7 +299,9 @@ func TestQuizGenerateAndFromColumnsHTTP(t *testing.T) {
 
 	payload, _ = json.Marshal(quizRequest{DocumentIDs: []string{id}, N: 4, Mode: "from_columns"})
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/quiz", bytes.NewReader(payload)))
+	req = httptest.NewRequest(http.MethodPost, "/quiz", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("from_columns status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -258,6 +382,12 @@ func TestSpreadsheetUploadIngestAndAskCitation(t *testing.T) {
 	if got.Status != statusDone || got.ChunkCount != 4 {
 		t.Fatalf("after ingest %+v", got)
 	}
+	if got.RowCount == nil || *got.RowCount != 4 {
+		t.Fatalf("row_count=%v", got.RowCount)
+	}
+	if got.PageCount != nil {
+		t.Fatalf("spreadsheet page_count=%v", *got.PageCount)
+	}
 
 	var sheet string
 	var row int
@@ -270,7 +400,9 @@ func TestSpreadsheetUploadIngestAndAskCitation(t *testing.T) {
 
 	payload, _ := json.Marshal(askRequest{Question: "เมืองหลวงของไทยคือที่ใด", DocumentIDs: []string{created.ID}})
 	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(payload)))
+	areq := httptest.NewRequest(http.MethodPost, "/ask", bytes.NewReader(payload))
+	areq.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, areq)
 	events := parseTestSSE(t, w.Body.String())
 	if len(events.citations) < 1 {
 		t.Fatalf("citations=%+v body=%s", events.citations, w.Body.String())

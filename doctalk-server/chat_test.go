@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -167,7 +168,7 @@ func TestBuildAskPromptIsGrounded(t *testing.T) {
 	sys, user := buildAskPrompt("ภาษาไทยคืออะไร", []retrievedChunk{{
 		DocumentID: "doc-1", PageNumber: 3, Content: "ไทยเป็นภาษา",
 	}})
-	for _, needle := range []string{"ONLY", "not found", "Thai or English"} {
+	for _, needle := range []string{"ONLY", "NOT_FOUND", "FOUND", "Thai or English"} {
 		if !strings.Contains(sys, needle) {
 			t.Fatalf("system prompt missing %q: %s", needle, sys)
 		}
@@ -190,10 +191,136 @@ func TestGeminiChatRequestOmitsKeyQuery(t *testing.T) {
 		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]}}]}\n\n"))
 	}))
 	defer srv.Close()
-	g := newGeminiChat(config{GeminiAPIKey: "abc", GeminiBaseURL: srv.URL, GeminiChatModel: "gemini-3.8-flash"})
+	g := newGeminiChat(config{GeminiAPIKey: "abc", GeminiBaseURL: srv.URL, GeminiChatModel: "gemini-3.8-flash"}, nil)
 	g.http = srv.Client()
 	g.maxRetries = 1
 	if err := g.StreamAnswer(context.Background(), "q", nil, func(string) error { return nil }); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGeminiChat503StopsWithinRetryBudget(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"status":"UNAVAILABLE","message":"high demand"}}`))
+	}))
+	defer srv.Close()
+
+	g := &geminiChat{
+		apiKey:     "k",
+		model:      defaultChatModel,
+		baseURL:    srv.URL,
+		http:       srv.Client(),
+		maxRetries: 3,
+		budget:     200 * time.Millisecond,
+		sleep:      func(context.Context, time.Duration) error { return nil },
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	start := time.Now()
+	err := g.StreamAnswer(ctx, "q", nil, func(string) error { return nil })
+	if err == nil {
+		t.Fatal("expected 503")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("retry loop lasted %s, expected budget cap", time.Since(start))
+	}
+	if hits.Load() > 3 {
+		t.Fatalf("hits=%d want <=3", hits.Load())
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "HTTP 503") || !strings.Contains(msg, "UNAVAILABLE") {
+		t.Fatalf("want upstream reason, got %s", msg)
+	}
+	if strings.Contains(msg, "timed out") {
+		t.Fatalf("should not surface as timeout: %s", msg)
+	}
+}
+
+func TestGeminiChatConcurrentHTTP(t *testing.T) {
+	var inFlight, max atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := inFlight.Add(1)
+		for {
+			cur := max.Load()
+			if n <= cur || max.CompareAndSwap(cur, n) {
+				break
+			}
+		}
+		time.Sleep(80 * time.Millisecond)
+		inFlight.Add(-1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]}}]}\n\n"))
+	}))
+	defer srv.Close()
+
+	g := &geminiChat{
+		apiKey:     "k",
+		model:      defaultChatModel,
+		baseURL:    srv.URL,
+		http:       srv.Client(),
+		maxRetries: 1,
+		sleep:      func(context.Context, time.Duration) error { return nil },
+		limiter:    newSlotLimiter(2),
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			if err := g.StreamAnswer(context.Background(), "q", nil, func(string) error { return nil }); err != nil {
+				t.Errorf("%v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if max.Load() < 2 {
+		t.Fatalf("max in-flight=%d, mutex still serializing?", max.Load())
+	}
+}
+
+func TestGeminiChatFallbackAfter503(t *testing.T) {
+	var primary, fallback atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "primary-model") {
+			primary.Add(1)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"status":"UNAVAILABLE","message":"high demand"}}`))
+			return
+		}
+		if strings.Contains(r.URL.Path, "fallback-model") {
+			fallback.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"fb\"}]}}]}\n\n"))
+			return
+		}
+		t.Errorf("unexpected path %s", r.URL.Path)
+	}))
+	defer srv.Close()
+
+	g := &geminiChat{
+		apiKey:     "k",
+		model:      "primary-model",
+		fallback:   "fallback-model",
+		baseURL:    srv.URL,
+		http:       srv.Client(),
+		maxRetries: 2,
+		budget:     time.Second,
+		sleep:      func(context.Context, time.Duration) error { return nil },
+	}
+	var got strings.Builder
+	if err := g.StreamAnswer(context.Background(), "q", nil, func(s string) error {
+		got.WriteString(s)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != "fb" {
+		t.Fatalf("got %q", got.String())
+	}
+	if primary.Load() < 1 || fallback.Load() != 1 {
+		t.Fatalf("primary=%d fallback=%d", primary.Load(), fallback.Load())
 	}
 }

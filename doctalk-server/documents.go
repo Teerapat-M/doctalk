@@ -34,7 +34,8 @@ type documentJSON struct {
 	ByteSize     int64       `json:"byte_size"`
 	Status       string      `json:"status"`
 	ErrorMessage *string     `json:"error_message"`
-	PageCount    int         `json:"page_count"`
+	PageCount    *int        `json:"page_count,omitempty"`
+	RowCount     *int        `json:"row_count,omitempty"`
 	ChunkCount   int         `json:"chunk_count"`
 	SourceKind   string      `json:"source_kind"`
 	SheetName    string      `json:"sheet_name,omitempty"`
@@ -226,17 +227,21 @@ func (s *server) listDocuments(c *gin.Context) {
 }
 
 func (s *server) getDocument(c *gin.Context) {
-	if s.db == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "server is not configured"})
-		return
-	}
 	id := c.Param("id")
 	if id == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing id"})
 		return
 	}
+	if !validUUID(id) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid document_id"})
+		return
+	}
+	if s.db == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "server is not configured"})
+		return
+	}
 	doc, err := s.loadDocument(c.Request.Context(), id)
-	if err == sql.ErrNoRows || isBadUUID(err) {
+	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
@@ -284,9 +289,10 @@ func (s *server) loadDocuments(ctx context.Context, id string) ([]documentJSON, 
 		var d documentJSON
 		var errMsg sql.NullString
 		var sheets sql.NullString
+		var storedCount int
 		if err := rows.Scan(
 			&d.ID, &d.Filename, &d.ContentType, &d.ByteSize, &d.Status,
-			&errMsg, &d.PageCount, &d.CreatedAt, &d.UpdatedAt, &d.ChunkCount,
+			&errMsg, &storedCount, &d.CreatedAt, &d.UpdatedAt, &d.ChunkCount,
 			&d.SourceKind, &d.SheetName, &sheets,
 		); err != nil {
 			return nil, err
@@ -296,6 +302,14 @@ func (s *server) loadDocuments(ctx context.Context, id string) ([]documentJSON, 
 		}
 		if sheets.Valid && sheets.String != "" && sheets.String != "null" {
 			_ = json.Unmarshal([]byte(sheets.String), &d.Sheets)
+		}
+		count := storedCount
+		if d.SourceKind == kindXLSX || d.SourceKind == kindCSV {
+			if count > 0 {
+				d.RowCount = &count
+			}
+		} else if count > 0 {
+			d.PageCount = &count
 		}
 		out = append(out, d)
 	}

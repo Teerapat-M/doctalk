@@ -69,6 +69,7 @@ func TestGeminiQuizJSONSchemaAndRetry(t *testing.T) {
 		baseURL:    srv.URL,
 		http:       srv.Client(),
 		maxRetries: 4,
+		budget:     time.Second,
 		sleep:      func(context.Context, time.Duration) error { return nil },
 	}
 	raw, err := g.GenerateJSON(context.Background(), "sys", "user")
@@ -87,11 +88,11 @@ func TestGeminiQuizJSONSchemaAndRetry(t *testing.T) {
 }
 
 func TestNewGeminiQuizModelDefaultsToChat(t *testing.T) {
-	g := newGeminiQuiz(config{GeminiAPIKey: "k", GeminiChatModel: "chat-m", GeminiQuizModel: ""})
+	g := newGeminiQuiz(config{GeminiAPIKey: "k", GeminiChatModel: "chat-m", GeminiQuizModel: ""}, nil)
 	if g.model != "chat-m" {
 		t.Fatalf("model=%q", g.model)
 	}
-	g = newGeminiQuiz(config{GeminiAPIKey: "k", GeminiChatModel: "chat-m", GeminiQuizModel: "quiz-m"})
+	g = newGeminiQuiz(config{GeminiAPIKey: "k", GeminiChatModel: "chat-m", GeminiQuizModel: "quiz-m"}, nil)
 	if g.model != "quiz-m" {
 		t.Fatalf("model=%q", g.model)
 	}

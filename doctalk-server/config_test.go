@@ -29,6 +29,10 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("ASK_TIMEOUT_SECONDS", "")
 	t.Setenv("GEMINI_QUIZ_MODEL", "")
 	t.Setenv("QUIZ_N_MAX", "")
+	t.Setenv("GEMINI_CHAT_FALLBACK_MODEL", "")
+	t.Setenv("GEMINI_MAX_IN_FLIGHT", "")
+	t.Setenv("GEMINI_RETRY_BUDGET_SECONDS", "")
+	t.Setenv("TRUSTED_PROXIES", "")
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -65,6 +69,15 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.QuizNMax != defaultQuizNMax {
 		t.Fatalf("QuizNMax=%d", cfg.QuizNMax)
+	}
+	if cfg.GeminiChatFallbackModel != "" {
+		t.Fatalf("fallback should be unset, got %q", cfg.GeminiChatFallbackModel)
+	}
+	if cfg.GeminiMaxInFlight != defaultGeminiMaxInFlight {
+		t.Fatalf("in-flight=%d", cfg.GeminiMaxInFlight)
+	}
+	if cfg.Port != "8181" {
+		t.Fatalf("default port=%q", cfg.Port)
 	}
 }
 

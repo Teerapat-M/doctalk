@@ -19,18 +19,21 @@ services:
     build:
       context: ./doctalk-server
     ports:
-      - "${API_PORT:-8081}:8081"
+      - "${API_PORT:-8181}:8181"
     environment:
-      PORT: "8081"
-      API_PORT: "8081"
+      PORT: "8181"
+      API_PORT: "8181"
       DATABASE_URL: postgres://doctalk:doctalk@db:5432/doctalk?sslmode=disable
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5174}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5191}
       GIN_MODE: release
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_BASE_URL: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com}
       GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-001}
       GEMINI_CHAT_MODEL: ${GEMINI_CHAT_MODEL:-gemini-3.8-flash}
       GEMINI_QUIZ_MODEL: ${GEMINI_QUIZ_MODEL:-}
+      GEMINI_CHAT_FALLBACK_MODEL: ${GEMINI_CHAT_FALLBACK_MODEL:-}
+      GEMINI_MAX_IN_FLIGHT: ${GEMINI_MAX_IN_FLIGHT:-2}
+      GEMINI_RETRY_BUDGET_SECONDS: ${GEMINI_RETRY_BUDGET_SECONDS:-8}
       QUIZ_N_MAX: ${QUIZ_N_MAX:-20}
       ASK_TOP_K: ${ASK_TOP_K:-5}
       ASK_TOP_K_MAX: ${ASK_TOP_K_MAX:-20}
