@@ -212,7 +212,7 @@ func headersAndCount(rows [][]string) ([]string, int) {
 	return headers, n
 }
 
-func loadSheetRows(data []byte, kind, sheet string, mapping columnMap) ([]sheetRow, error) {
+func loadSheetRows(data []byte, kind, sheet string, mapping columnMap, maxRows int) ([]sheetRow, error) {
 	var rows [][]string
 	var err error
 	switch kind {
@@ -237,10 +237,13 @@ func loadSheetRows(data []byte, kind, sheet string, mapping columnMap) ([]sheetR
 	default:
 		return nil, fmt.Errorf("unsupported spreadsheet")
 	}
-	return mapSheetRows(rows, mapping)
+	return mapSheetRows(rows, mapping, maxRows)
 }
 
-func mapSheetRows(rows [][]string, mapping columnMap) ([]sheetRow, error) {
+func mapSheetRows(rows [][]string, mapping columnMap, maxRows int) ([]sheetRow, error) {
+	if maxRows < 1 {
+		maxRows = maxSpreadsheetRows
+	}
 	if len(rows) == 0 {
 		return nil, fmt.Errorf("empty sheet")
 	}
@@ -292,8 +295,8 @@ func mapSheetRows(rows [][]string, mapping columnMap) ([]sheetRow, error) {
 			continue
 		}
 		out = append(out, sr)
-		if len(out) > maxSpreadsheetRows {
-			return nil, fmt.Errorf("too many rows (max %d)", maxSpreadsheetRows)
+		if len(out) > maxRows {
+			return nil, fmt.Errorf("too many rows (max %d)", maxRows)
 		}
 	}
 	if len(out) == 0 {

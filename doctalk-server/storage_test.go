@@ -22,6 +22,12 @@ func TestMemStorageRoundTrip(t *testing.T) {
 	if string(got) != "%PDF-1.4" {
 		t.Fatalf("got %q", got)
 	}
+	if err := s.Delete(ctx, "abc.pdf"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(ctx, "abc.pdf"); err == nil {
+		t.Fatal("expected missing after delete")
+	}
 }
 
 func TestDiskStorageRejectsTraversal(t *testing.T) {

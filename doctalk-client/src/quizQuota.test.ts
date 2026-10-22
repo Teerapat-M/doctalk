@@ -1,38 +1,47 @@
-import { describe, expect, it } from "vitest";
-import { QUIZ_DAILY_LIMIT, consumeQuota, quotaDay, readQuota } from "./quizQuota";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { fetchQuota, quizQuotaReached, quotaUrl } from "./quizQuota";
 
-function mem(initial?: string) {
-  const data: Record<string, string> = initial ? { "dt-quiz-quota": initial } : {};
-  return {
-    getItem: (k: string) => data[k] ?? null,
-    setItem: (k: string, v: string) => {
-      data[k] = v;
-    },
-    data,
-  };
-}
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
-describe("quotaDay", () => {
-  it("rolls back before 07:00 Asia/Bangkok", () => {
-    expect(quotaDay(new Date("2026-10-22T00:30:00+07:00"))).toBe("2026-10-21");
-    expect(quotaDay(new Date("2026-10-22T07:00:00+07:00"))).toBe("2026-10-22");
+describe("quotaUrl", () => {
+  it("joins /quota onto the API base", () => {
+    expect(quotaUrl("http://localhost:8181")).toBe("http://localhost:8181/quota");
+    expect(quotaUrl("http://localhost:8181/")).toBe("http://localhost:8181/quota");
   });
 });
 
-describe("readQuota / consumeQuota", () => {
-  it("starts empty and stops at the daily cap", () => {
-    const store = mem();
-    const now = new Date("2026-10-22T10:00:00+07:00");
-    expect(readQuota(store, now)).toEqual({ used: 0, remaining: QUIZ_DAILY_LIMIT, day: "2026-10-22" });
-    let snap = readQuota(store, now);
-    for (let i = 0; i < QUIZ_DAILY_LIMIT; i++) snap = consumeQuota(store, now);
-    expect(snap.used).toBe(5);
-    expect(snap.remaining).toBe(0);
-    expect(consumeQuota(store, now).used).toBe(5);
+describe("fetchQuota", () => {
+  it("reads server quota with credentials", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        quiz: { used: 5, remaining: 0, limit: 5, reset_at: "2026-10-23T00:00:00Z" },
+        ask: { used: 0, remaining: 20, limit: 20 },
+        ingest: { used: 1, remaining: 9, limit: 10 },
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const quota = await fetchQuota("http://localhost:8181");
+    expect(quota.quiz.remaining).toBe(0);
+    expect(quizQuotaReached(quota)).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8181/quota",
+      expect.objectContaining({ credentials: "include" }),
+    );
   });
 
-  it("does not count a previous day's usage", () => {
-    const store = mem(JSON.stringify({ day: "2026-10-21", used: 5 }));
-    expect(readQuota(store, new Date("2026-10-22T10:00:00+07:00")).remaining).toBe(QUIZ_DAILY_LIMIT);
+  it("does not treat an unloaded quota as reached", () => {
+    expect(quizQuotaReached(null)).toBe(false);
+    expect(
+      quizQuotaReached({
+        quiz: { used: 0, remaining: 5, limit: 5 },
+        ask: { used: 0, remaining: 20, limit: 20 },
+        ingest: { used: 0, remaining: 10, limit: 10 },
+      }),
+    ).toBe(false);
   });
 });

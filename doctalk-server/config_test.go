@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -33,6 +34,14 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("GEMINI_MAX_IN_FLIGHT", "")
 	t.Setenv("GEMINI_RETRY_BUDGET_SECONDS", "")
 	t.Setenv("TRUSTED_PROXIES", "")
+	t.Setenv("JWT_SECRET", "")
+	t.Setenv("QUIZ_PER_DAY", "")
+	t.Setenv("ASK_PER_MINUTE", "")
+	t.Setenv("INGEST_PER_MINUTE", "")
+	t.Setenv("QUIZ_RESET_HOUR", "")
+	t.Setenv("GUEST_TTL_HOURS", "")
+	t.Setenv("MAX_PAGES", "")
+	t.Setenv("MAX_ROWS", "")
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -78,6 +87,24 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.Port != "8181" {
 		t.Fatalf("default port=%q", cfg.Port)
+	}
+	if cfg.JWTSecret != "" {
+		t.Fatalf("JWTSecret should be empty, got %q", cfg.JWTSecret)
+	}
+	if cfg.QuizPerDay != defaultQuizPerDay || cfg.AskPerMinute != defaultAskPerMinute || cfg.IngestPerMinute != defaultIngestPerMinute {
+		t.Fatalf("limits quiz=%d ask=%d ingest=%d", cfg.QuizPerDay, cfg.AskPerMinute, cfg.IngestPerMinute)
+	}
+	if cfg.QuizResetHour != defaultQuizResetHour {
+		t.Fatalf("QuizResetHour=%d", cfg.QuizResetHour)
+	}
+	if cfg.GuestTTL != defaultGuestTTL {
+		t.Fatalf("GuestTTL=%s", cfg.GuestTTL)
+	}
+	if cfg.MaxPages != defaultMaxPages || cfg.MaxRows != defaultMaxRows {
+		t.Fatalf("caps pages=%d rows=%d", cfg.MaxPages, cfg.MaxRows)
+	}
+	if !strings.Contains(cfg.CORSOrigin, "3917") {
+		t.Fatalf("CORSOrigin=%q", cfg.CORSOrigin)
 	}
 }
 

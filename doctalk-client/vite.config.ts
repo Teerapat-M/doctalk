@@ -5,7 +5,7 @@ import { defineConfig, loadEnv, type Plugin, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const defaultVitePort = 4317;
+const defaultVitePort = 3917;
 
 function strictPortMessage(port: number): Plugin {
   const msg = `Vite port ${port} is already in use. Set VITE_PORT to a free port (default ${defaultVitePort}; 5173/5174/5191 collide on the owner's PC).`;
@@ -39,10 +39,11 @@ export default defineConfig(({ mode }) => {
       port: vitePort,
       strictPort: true,
       proxy: {
-        "/health": { target: apiUrl, changeOrigin: true },
-        "/documents": { target: apiUrl, changeOrigin: true },
-        "/ask": { target: apiUrl, changeOrigin: true },
-        "/quiz": { target: apiUrl, changeOrigin: true },
+        "/health": { target: apiUrl, changeOrigin: true, cookieDomainRewrite: "" },
+        "/documents": { target: apiUrl, changeOrigin: true, cookieDomainRewrite: "" },
+        "/ask": { target: apiUrl, changeOrigin: true, cookieDomainRewrite: "" },
+        "/quiz": { target: apiUrl, changeOrigin: true, cookieDomainRewrite: "" },
+        "/quota": { target: apiUrl, changeOrigin: true, cookieDomainRewrite: "" },
       },
     },
     test: {

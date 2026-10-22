@@ -52,6 +52,9 @@ func (s *server) ingestDocument(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid document_id"})
 		return
 	}
+	if s.rejectIfLimited(c, rateIngest) {
+		return
+	}
 	if s.embed == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "GEMINI_API_KEY is not configured"})
 		return
@@ -62,10 +65,11 @@ func (s *server) ingestDocument(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+	guest := guestIDFrom(c)
 	var kind, key, status string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT source_kind, storage_key, status FROM documents WHERE id=$1
-	`, id).Scan(&kind, &key, &status)
+		SELECT source_kind, storage_key, status FROM documents WHERE id=$1 AND guest_id=$2
+	`, id, guest).Scan(&kind, &key, &status)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -83,7 +87,7 @@ func (s *server) ingestDocument(c *gin.Context) {
 		return
 	}
 
-	doc, err := s.loadDocument(ctx, id)
+	doc, err := s.loadDocument(ctx, id, guest)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load document"})
 		return
@@ -110,7 +114,7 @@ func (s *server) ingestDocument(c *gin.Context) {
 		s.processSpreadsheet(pctx, id, key, kind, req.Sheet, req.Columns)
 	}()
 
-	doc, err = s.loadDocument(ctx, id)
+	doc, err = s.loadDocument(ctx, id, guest)
 	if err != nil {
 		c.JSON(http.StatusAccepted, gin.H{"id": id, "status": statusExtracting})
 		return
@@ -130,7 +134,7 @@ func (s *server) processSpreadsheet(ctx context.Context, id, key, kind, sheet st
 		s.fail(ctx, id, fmt.Errorf("read stored file: %w", err))
 		return
 	}
-	rows, err := loadSheetRows(data, kind, sheet, mapping)
+	rows, err := loadSheetRows(data, kind, sheet, mapping, s.cfg.MaxRows)
 	if err != nil {
 		s.fail(ctx, id, fmt.Errorf("extract: %w", err))
 		return

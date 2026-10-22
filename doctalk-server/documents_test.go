@@ -273,6 +273,37 @@ func TestDocumentIngestWithMockGemini(t *testing.T) {
 	}
 }
 
+func TestIngestFailsWhenTooManyPages(t *testing.T) {
+	db := openTestDB(t)
+	s := &server{
+		ping:    db,
+		db:      db,
+		cfg:     config{CORSOrigin: "*", MaxUploadBytes: 1 << 20, MaxPages: 1},
+		store:   newMemStorage(),
+		embed:   &fakeEmbedder{},
+		extract: stubExtract{pages: []pageText{{Number: 1, Text: "one"}, {Number: 2, Text: "two"}}},
+	}
+	r := newRouter(s)
+	body, ctype := pdfForm(t, "big.pdf", []byte("%PDF-1.4\n"))
+	req := httptest.NewRequest(http.MethodPost, "/documents", body)
+	req.Header.Set("Content-Type", ctype)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var created documentJSON
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	s.wg.Wait()
+	got, err := s.loadDocument(context.Background(), created.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != statusFailed || got.ErrorMessage == nil || !strings.Contains(*got.ErrorMessage, "too many pages") {
+		t.Fatalf("got %+v", got)
+	}
+}
+
 func TestIngestFailsWhenExtractEmpty(t *testing.T) {
 	db := openTestDB(t)
 	s := &server{
@@ -296,7 +327,7 @@ func TestIngestFailsWhenExtractEmpty(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &created)
 	s.wg.Wait()
 
-	got, err := s.loadDocument(context.Background(), created.ID)
+	got, err := s.loadDocument(context.Background(), created.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}

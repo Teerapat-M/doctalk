@@ -13,7 +13,7 @@ import {
 } from "./components";
 import { documentCountLabel, type DocumentRecord } from "./documents";
 import { generateQuiz, type QuizMode, type QuizQuestion } from "./quiz";
-import { QUIZ_DAILY_LIMIT, consumeQuota, readQuota } from "./quizQuota";
+import { fetchQuota, quizQuotaReached, type QuotaResponse } from "./quizQuota";
 import {
   answerVisible,
   clampN,
@@ -25,7 +25,6 @@ import {
 } from "./quizToggles";
 
 const optionLetters = ["A", "B", "C", "D"] as const;
-const quotaStore = () => window.localStorage;
 
 type Props = {
   baseUrl?: string;
@@ -50,13 +49,34 @@ export default function QuizPanel({
   const [picks, setPicks] = useState<PicksMap>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [quota, setQuota] = useState(() =>
-    typeof window === "undefined" ? { used: 0, remaining: QUIZ_DAILY_LIMIT, day: "" } : readQuota(quotaStore()),
-  );
+  const [quota, setQuota] = useState<QuotaResponse | null>(null);
 
   const selected = useMemo(() => docs.find((d) => d.id === sourceId), [docs, sourceId]);
   const readyDocs = docs.filter((d) => d.status === "done");
-  const quotaReached = quota.remaining <= 0;
+  const quizQuota = quota?.quiz;
+  const quotaReached = quizQuotaReached(quota);
+  const quotaLimit = quizQuota?.limit || 5;
+  const quotaRemaining = quizQuota?.remaining ?? quotaLimit;
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchQuota(baseUrl)
+      .then((q) => {
+        if (!cancelled) setQuota(q);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [baseUrl]);
+
+  async function refreshQuota() {
+    try {
+      setQuota(await fetchQuota(baseUrl));
+    } catch {
+      /* keep last snapshot */
+    }
+  }
 
   async function onGenerate() {
     if (!sourceId || quotaReached) return;
@@ -71,9 +91,10 @@ export default function QuizPanel({
       setQuestions(result.questions);
       setShown({});
       setPicks({});
-      setQuota(consumeQuota(quotaStore()));
+      await refreshQuota();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "quiz failed");
+      await refreshQuota();
     } finally {
       setBusy(false);
     }
@@ -142,11 +163,11 @@ export default function QuizPanel({
           }}
         />
       </div>
-      <p className="lede">ใช้โควตา 1 ครั้ง · เหลือ {quota.remaining}/{QUIZ_DAILY_LIMIT} ครั้งวันนี้</p>
+        <p className="lede">ใช้โควตา 1 ครั้ง · เหลือ {quotaRemaining}/{quotaLimit} ครั้งวันนี้</p>
 
       {quotaReached ? (
         <EmptyState title="ใช้โควตาวันนี้ครบแล้ว">
-          <p>Daily quiz limit reached ({QUIZ_DAILY_LIMIT}/{QUIZ_DAILY_LIMIT}). โควตาจะรีเซ็ตตอน 07:00 (เวลาไทย)</p>
+          <p>Daily quiz limit reached ({quotaLimit}/{quotaLimit}). โควตาจะรีเซ็ตตอน 07:00 (เวลาไทย)</p>
           {questions.length ? <p>แบบทดสอบเดิมยังเปิดดูได้</p> : null}
         </EmptyState>
       ) : null}

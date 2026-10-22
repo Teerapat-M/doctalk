@@ -86,6 +86,9 @@ func (s *server) ask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": kerr})
 		return
 	}
+	if s.rejectIfLimited(c, rateAsk) {
+		return
+	}
 	if s.embed == nil || s.chat == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "GEMINI_API_KEY is not configured"})
 		return
@@ -102,7 +105,7 @@ func (s *server) ask(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
 	defer cancel()
 
-	if err := s.ensureAskDocs(ctx, docIDs); err != nil {
+	if err := s.ensureAskDocs(ctx, docIDs, guestIDFrom(c)); err != nil {
 		if errors.Is(err, errAskDocsBadID) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid document_id"})
 			return
@@ -232,12 +235,12 @@ var (
 	errAskDocsBadID    = errors.New("ask docs bad id")
 )
 
-func (s *server) ensureAskDocs(ctx context.Context, ids []string) error {
+func (s *server) ensureAskDocs(ctx context.Context, ids []string, guest string) error {
 	q := `
 		SELECT id::text, status FROM documents
-		WHERE id = ANY($1::uuid[])
+		WHERE id = ANY($1::uuid[]) AND guest_id = $2
 	`
-	rows, err := s.db.QueryContext(ctx, q, "{"+strings.Join(ids, ",")+"}")
+	rows, err := s.db.QueryContext(ctx, q, "{"+strings.Join(ids, ",")+"}", guest)
 	if err != nil {
 		if isBadUUID(err) {
 			return errAskDocsBadID

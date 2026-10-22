@@ -33,8 +33,15 @@ const (
 	citationSnippetRunes     = 240
 	defaultQuizN             = 5
 	defaultQuizNMax          = 20
-	defaultVitePort          = "4317"
+	defaultVitePort          = "3917"
 	defaultCORSOrigin        = "http://localhost:" + defaultVitePort + ",http://127.0.0.1:" + defaultVitePort
+	defaultQuizPerDay        = 5
+	defaultAskPerMinute      = 20
+	defaultIngestPerMinute   = 10
+	defaultQuizResetHour     = 7
+	defaultGuestTTL          = 7 * 24 * time.Hour
+	defaultMaxPages          = 50
+	defaultMaxRows           = 2000
 )
 
 type config struct {
@@ -55,8 +62,16 @@ type config struct {
 	AskTopKMax              int
 	AskTimeout              time.Duration
 	MaxUploadBytes          int64
+	MaxPages                int
+	MaxRows                 int
 	StorageDir              string
 	TrustedProxies          []string
+	JWTSecret               string
+	QuizPerDay              int
+	AskPerMinute            int
+	IngestPerMinute         int
+	QuizResetHour           int
+	GuestTTL                time.Duration
 }
 
 func loadConfig() (config, error) {
@@ -78,8 +93,16 @@ func loadConfig() (config, error) {
 		AskTopKMax:              getenvInt("ASK_TOP_K_MAX", defaultAskTopKMax),
 		AskTimeout:              time.Duration(getenvInt("ASK_TIMEOUT_SECONDS", defaultAskTimeoutSec)) * time.Second,
 		MaxUploadBytes:          getenvInt64("MAX_UPLOAD_BYTES", defaultMaxUpload),
+		MaxPages:                getenvInt("MAX_PAGES", defaultMaxPages),
+		MaxRows:                 getenvInt("MAX_ROWS", defaultMaxRows),
 		StorageDir:              getenv("STORAGE_DIR", defaultStorageDir),
 		TrustedProxies:          splitCSV(os.Getenv("TRUSTED_PROXIES")),
+		JWTSecret:               os.Getenv("JWT_SECRET"),
+		QuizPerDay:              getenvInt("QUIZ_PER_DAY", defaultQuizPerDay),
+		AskPerMinute:            getenvInt("ASK_PER_MINUTE", defaultAskPerMinute),
+		IngestPerMinute:         getenvInt("INGEST_PER_MINUTE", defaultIngestPerMinute),
+		QuizResetHour:           getenvInt("QUIZ_RESET_HOUR", defaultQuizResetHour),
+		GuestTTL:                time.Duration(getenvInt("GUEST_TTL_HOURS", int(defaultGuestTTL/time.Hour))) * time.Hour,
 	}
 	if cfg.DatabaseURL == "" {
 		return config{}, fmt.Errorf("DATABASE_URL is required")
@@ -119,6 +142,27 @@ func loadConfig() (config, error) {
 	}
 	if cfg.GeminiMaxInFlight < 1 {
 		cfg.GeminiMaxInFlight = defaultGeminiMaxInFlight
+	}
+	if cfg.MaxPages < 1 {
+		cfg.MaxPages = defaultMaxPages
+	}
+	if cfg.MaxRows < 1 {
+		cfg.MaxRows = defaultMaxRows
+	}
+	if cfg.QuizPerDay < 1 {
+		cfg.QuizPerDay = defaultQuizPerDay
+	}
+	if cfg.AskPerMinute < 1 {
+		cfg.AskPerMinute = defaultAskPerMinute
+	}
+	if cfg.IngestPerMinute < 1 {
+		cfg.IngestPerMinute = defaultIngestPerMinute
+	}
+	if cfg.QuizResetHour < 0 || cfg.QuizResetHour > 23 {
+		cfg.QuizResetHour = defaultQuizResetHour
+	}
+	if cfg.GuestTTL < time.Hour {
+		cfg.GuestTTL = defaultGuestTTL
 	}
 	if cfg.GeminiRetryBudget < time.Second {
 		cfg.GeminiRetryBudget = defaultGeminiRetryBudget

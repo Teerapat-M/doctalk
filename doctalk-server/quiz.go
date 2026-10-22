@@ -91,6 +91,9 @@ func (s *server) generateQuiz(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "mode must be generate or from_columns"})
 		return
 	}
+	if s.rejectIfLimited(c, rateQuiz) {
+		return
+	}
 	if mode == "generate" && s.quiz == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "GEMINI_API_KEY is not configured"})
 		return
@@ -107,7 +110,7 @@ func (s *server) generateQuiz(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
 	defer cancel()
 
-	if err := s.ensureAskDocs(ctx, docIDs); err != nil {
+	if err := s.ensureAskDocs(ctx, docIDs, guestIDFrom(c)); err != nil {
 		if errors.Is(err, errAskDocsBadID) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid document_id"})
 			return

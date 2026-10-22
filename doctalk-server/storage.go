@@ -19,6 +19,7 @@ import (
 type Storage interface {
 	Put(ctx context.Context, key string, r io.Reader) error
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
+	Delete(ctx context.Context, key string) error
 }
 
 func sanitizeKey(key string) (string, error) {
@@ -78,6 +79,18 @@ func (d *diskStorage) Get(_ context.Context, key string) (io.ReadCloser, error) 
 	return os.Open(full)
 }
 
+func (d *diskStorage) Delete(_ context.Context, key string) error {
+	full, err := d.resolve(key)
+	if err != nil {
+		return err
+	}
+	err = os.Remove(full)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
 type memStorage struct {
 	mu   sync.Mutex
 	data map[string][]byte
@@ -114,4 +127,15 @@ func (m *memStorage) Get(_ context.Context, key string) (io.ReadCloser, error) {
 		return nil, os.ErrNotExist
 	}
 	return io.NopCloser(bytes.NewReader(b)), nil
+}
+
+func (m *memStorage) Delete(_ context.Context, key string) error {
+	key, err := sanitizeKey(key)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	delete(m.data, key)
+	m.mu.Unlock()
+	return nil
 }

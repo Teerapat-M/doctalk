@@ -1,3 +1,4 @@
+import { apiFetch } from "./api";
 import type { Citation } from "./quiz";
 
 export type AskRequest = {
@@ -75,7 +76,7 @@ export async function streamAsk(
   handlers: AskHandlers,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch(askUrl(baseUrl), {
+  const res = await apiFetch(askUrl(baseUrl), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),

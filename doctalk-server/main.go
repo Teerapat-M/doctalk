@@ -54,7 +54,9 @@ func run() error {
 		chat:    chat,
 		quiz:    quiz,
 		extract: pdfExtractor{},
+		limits:  newRateLimiter(cfg),
 	}
+	s.startGuestCleanup()
 	r := newRouter(s)
 	addr := "0.0.0.0:" + cfg.Port
 	log.Printf("listening on %s", addr)

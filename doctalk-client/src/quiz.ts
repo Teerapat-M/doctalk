@@ -1,3 +1,5 @@
+import { apiFetch } from "./api";
+
 export type Citation = {
   document_id: string;
   page_number?: number;
@@ -50,7 +52,7 @@ export function formatCitation(citation: Citation): string {
 }
 
 export async function generateQuiz(baseUrl: string, req: QuizRequest): Promise<QuizResponse> {
-  const res = await fetch(quizUrl(baseUrl), {
+  const res = await apiFetch(quizUrl(baseUrl), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
