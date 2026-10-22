@@ -254,6 +254,89 @@ func TestQuizNotChargedOnUpstreamFailure(t *testing.T) {
 	}
 }
 
+func TestUnrecordRemovesOwnHitNotLatest(t *testing.T) {
+	l := newRateLimiter(config{AskPerMinute: 10, QuizPerDay: 5, QuizIPPerDay: 20, IngestPerMinute: 10, QuizResetHour: 7})
+	now := time.Date(2026, 10, 22, 10, 0, 0, 0, l.loc)
+	t1 := now
+	t2 := now.Add(time.Millisecond)
+	t3 := now.Add(2 * time.Millisecond)
+	l.mu.Lock()
+	l.recordLocked(rateAsk, "g", "203.0.113.10", t1)
+	l.recordLocked(rateAsk, "g", "203.0.113.10", t2)
+	l.recordLocked(rateAsk, "g", "203.0.113.10", t3)
+	l.unrecordLocked(rateAsk, "g", "203.0.113.10", t2)
+	used, _, _ := l.peekLocked(rateAsk, "g", "203.0.113.10", t3)
+	hits := append([]time.Time(nil), l.hits[l.key(rateAsk, "g", "g")]...)
+	l.mu.Unlock()
+	if used != 2 {
+		t.Fatalf("used=%d want 2 (own hit refunded, later hit kept)", used)
+	}
+	if len(hits) != 2 || !hits[0].Equal(t1) || !hits[1].Equal(t3) {
+		t.Fatalf("remaining hits=%v want [%s %s]", hits, t1, t3)
+	}
+}
+
+func TestQuizIPCapPersistsPerAddress(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.Exec(`DELETE FROM quiz_quota_hits`); err != nil {
+		t.Fatal(err)
+	}
+	const secret = "ip-quiz-secret-not-for-prod-32b"
+	cfg := config{
+		CORSOrigin:      "http://localhost:3917",
+		JWTSecret:       secret,
+		GuestTTL:        24 * time.Hour,
+		QuizPerDay:      5,
+		QuizIPPerDay:    1,
+		AskPerMinute:    20,
+		IngestPerMinute: 10,
+		QuizNMax:        20,
+		AskTimeout:      time.Minute,
+	}
+	s := &server{
+		db:     db,
+		cfg:    cfg,
+		limits: newRateLimiter(cfg),
+		embed:  &fakeEmbedder{},
+		quiz:   &fakeQuiz{bodies: [][]byte{quizJSONFixture(t, 1, 1), quizJSONFixture(t, 1, 1)}},
+	}
+	r := newRouter(s)
+	a, b := &testJar{}, &testJar{}
+	a.do(r, httptest.NewRequest(http.MethodGet, "/quota", nil))
+	b.do(r, httptest.NewRequest(http.MethodGet, "/quota", nil))
+	guestA, err := parseGuestJWT(secret, a.cookie.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guestB, err := parseGuestJWT(secret, b.cookie.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idA := insertGuestQuizDoc(t, db, "ipa.xlsx", guestA)
+	idB := insertGuestQuizDoc(t, db, "ipb.xlsx", guestB)
+
+	post := func(j *testJar, id, ip string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/quiz", strings.NewReader(`{"document_ids":["`+id+`"],"n":1,"mode":"generate"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = ip + ":1234"
+		return j.do(r, req)
+	}
+	if w := post(a, idA, "203.0.113.50"); w.Code != http.StatusOK {
+		t.Fatalf("first ip=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := post(b, idB, "203.0.113.50"); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("shared ip second guest=%d body=%s", w.Code, w.Body.String())
+	}
+
+	s.limits = newRateLimiter(cfg)
+	if w := post(b, idB, "203.0.113.50"); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("persisted ip cap=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := post(b, idB, "203.0.113.51"); w.Code != http.StatusOK {
+		t.Fatalf("other ip=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func insertGuestQuizDoc(t *testing.T, db *sql.DB, filename, guest string) string {
 	t.Helper()
 	id := insertDoneDoc(t, db, filename)

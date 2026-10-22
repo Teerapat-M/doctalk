@@ -44,6 +44,7 @@ const (
 	defaultGuestTTL          = 7 * 24 * time.Hour
 	defaultMaxPages          = 50
 	defaultMaxRows           = 2000
+	defaultSupabaseBucket    = "doctalk-uploads"
 	minJWTSecretBytes        = 32
 )
 
@@ -78,6 +79,9 @@ type config struct {
 	GuestTTL                time.Duration
 	CookieSecure            bool
 	CookieSameSite          http.SameSite
+	SupabaseURL             string
+	SupabaseServiceKey      string
+	SupabaseBucket          string
 }
 
 func loadConfig() (config, error) {
@@ -112,12 +116,27 @@ func loadConfig() (config, error) {
 		GuestTTL:                time.Duration(getenvInt("GUEST_TTL_HOURS", int(defaultGuestTTL/time.Hour))) * time.Hour,
 		CookieSecure:            getenvBool("COOKIE_SECURE", false),
 		CookieSameSite:          parseCookieSameSite(os.Getenv("COOKIE_SAMESITE")),
+		SupabaseURL:             strings.TrimRight(os.Getenv("SUPABASE_URL"), "/"),
+		SupabaseServiceKey:      os.Getenv("SUPABASE_SERVICE_ROLE_KEY"),
+		SupabaseBucket:          getenv("SUPABASE_BUCKET", defaultSupabaseBucket),
 	}
 	if cfg.DatabaseURL == "" {
 		return config{}, fmt.Errorf("DATABASE_URL is required")
 	}
 	if len(cfg.JWTSecret) < minJWTSecretBytes {
 		return config{}, fmt.Errorf("JWT_SECRET must be at least %d bytes", minJWTSecretBytes)
+	}
+	if corsHasWildcard(cfg.CORSOrigin) {
+		return config{}, fmt.Errorf("CORS_ORIGIN must not be a wildcard when credentials are used")
+	}
+	if cfg.CookieSameSite == http.SameSiteNoneMode && !cfg.CookieSecure {
+		return config{}, fmt.Errorf("COOKIE_SAMESITE=None requires COOKIE_SECURE=true")
+	}
+	if (cfg.SupabaseURL == "") != (cfg.SupabaseServiceKey == "") {
+		return config{}, fmt.Errorf("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must both be set, or both unset")
+	}
+	if cfg.SupabaseBucket == "" {
+		cfg.SupabaseBucket = defaultSupabaseBucket
 	}
 	if cfg.GeminiEmbedBatch < 1 {
 		cfg.GeminiEmbedBatch = defaultEmbedBatch
@@ -172,9 +191,6 @@ func loadConfig() (config, error) {
 	}
 	if cfg.QuizIPPerDay < 1 {
 		cfg.QuizIPPerDay = defaultQuizIPPerDay
-	}
-	if cfg.CookieSameSite == http.SameSiteNoneMode {
-		cfg.CookieSecure = true
 	}
 	if cfg.QuizResetHour < 0 || cfg.QuizResetHour > 23 {
 		cfg.QuizResetHour = defaultQuizResetHour
@@ -234,6 +250,15 @@ func getenvBool(key string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func corsHasWildcard(csv string) bool {
+	for _, o := range splitCSV(csv) {
+		if o == "*" {
+			return true
+		}
+	}
+	return false
 }
 
 func parseCookieSameSite(v string) http.SameSite {

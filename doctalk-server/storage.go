@@ -5,11 +5,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Storage persists uploaded PDFs.
@@ -35,6 +38,13 @@ func sanitizeKey(key string) (string, error) {
 
 type diskStorage struct {
 	root string
+}
+
+func newStorage(cfg config) Storage {
+	if cfg.SupabaseURL != "" && cfg.SupabaseServiceKey != "" {
+		return newSupabaseStorage(cfg, nil)
+	}
+	return newDiskStorage(cfg.StorageDir)
 }
 
 func newDiskStorage(root string) *diskStorage {
@@ -137,5 +147,102 @@ func (m *memStorage) Delete(_ context.Context, key string) error {
 	m.mu.Lock()
 	delete(m.data, key)
 	m.mu.Unlock()
+	return nil
+}
+
+type supabaseStorage struct {
+	base   string
+	bucket string
+	key    string
+	client *http.Client
+}
+
+func newSupabaseStorage(cfg config, client *http.Client) *supabaseStorage {
+	if client == nil {
+		client = &http.Client{Timeout: 60 * time.Second}
+	}
+	return &supabaseStorage{
+		base:   strings.TrimRight(cfg.SupabaseURL, "/"),
+		bucket: cfg.SupabaseBucket,
+		key:    cfg.SupabaseServiceKey,
+		client: client,
+	}
+}
+
+func (s *supabaseStorage) objectURL(key string) string {
+	return s.base + "/storage/v1/object/" + url.PathEscape(s.bucket) + "/" + url.PathEscape(key)
+}
+
+func (s *supabaseStorage) do(ctx context.Context, method, key string, body io.Reader, upsert bool) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, s.objectURL(key), body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.key)
+	req.Header.Set("apikey", s.key)
+	if upsert {
+		req.Header.Set("x-upsert", "true")
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/octet-stream")
+	}
+	return s.client.Do(req)
+}
+
+func (s *supabaseStorage) Put(ctx context.Context, key string, r io.Reader) error {
+	key, err := sanitizeKey(key)
+	if err != nil {
+		return err
+	}
+	res, err := s.do(ctx, http.MethodPost, key, r, true)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return fmt.Errorf("supabase storage put: HTTP %d %s", res.StatusCode, bytes.TrimSpace(b))
+	}
+	return nil
+}
+
+func (s *supabaseStorage) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	key, err := sanitizeKey(key)
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.do(ctx, http.MethodGet, key, nil, false)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode == http.StatusNotFound {
+		res.Body.Close()
+		return nil, os.ErrNotExist
+	}
+	if res.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		res.Body.Close()
+		return nil, fmt.Errorf("supabase storage get: HTTP %d %s", res.StatusCode, bytes.TrimSpace(b))
+	}
+	return res.Body, nil
+}
+
+func (s *supabaseStorage) Delete(ctx context.Context, key string) error {
+	key, err := sanitizeKey(key)
+	if err != nil {
+		return err
+	}
+	res, err := s.do(ctx, http.MethodDelete, key, nil, false)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if res.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return fmt.Errorf("supabase storage delete: HTTP %d %s", res.StatusCode, bytes.TrimSpace(b))
+	}
 	return nil
 }

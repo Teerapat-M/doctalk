@@ -1,0 +1,73 @@
+# Blueprint for doctalk-server. Secrets are sync:false so they are filled
+# in the Render Dashboard (never committed). See DEPLOY.md.
+services:
+  - type: web
+    name: doctalk-server
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./doctalk-server/Dockerfile
+    dockerContext: ./doctalk-server
+    healthCheckPath: /health
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
+      - key: COOKIE_SAMESITE
+        value: None
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: GIN_MODE
+        value: release
+      - key: SUPABASE_BUCKET
+        value: doctalk-uploads
+      - key: STORAGE_DIR
+        value: /data/uploads
+      - key: TRUSTED_PROXIES
+        value: 0.0.0.0/0
+      - key: GUEST_TTL_HOURS
+        value: "168"
+      - key: QUIZ_PER_DAY
+        value: "5"
+      - key: QUIZ_RESET_HOUR
+        value: "7"
+      - key: QUIZ_IP_PER_DAY
+        value: "20"
+      - key: ASK_PER_MINUTE
+        value: "20"
+      - key: INGEST_PER_MINUTE
+        value: "10"
+      - key: MAX_UPLOAD_BYTES
+        value: "10485760"
+      - key: MAX_PAGES
+        value: "50"
+      - key: MAX_ROWS
+        value: "2000"
+      - key: GEMINI_BASE_URL
+        value: https://generativelanguage.googleapis.com
+      - key: GEMINI_EMBEDDING_MODEL
+        value: gemini-embedding-001
+      - key: GEMINI_CHAT_MODEL
+        value: gemini-3.8-flash
+      - key: GEMINI_MAX_IN_FLIGHT
+        value: "2"
+      - key: GEMINI_RETRY_BUDGET_SECONDS
+        value: "8"
+      - key: QUIZ_N_MAX
+        value: "20"
+      - key: ASK_TOP_K
+        value: "5"
+      - key: ASK_TOP_K_MAX
+        value: "20"
+      - key: ASK_TIMEOUT_SECONDS
+        value: "60"

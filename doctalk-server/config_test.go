@@ -47,6 +47,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("GUEST_TTL_HOURS", "")
 	t.Setenv("MAX_PAGES", "")
 	t.Setenv("MAX_ROWS", "")
+	t.Setenv("SUPABASE_URL", "")
+	t.Setenv("SUPABASE_SERVICE_ROLE_KEY", "")
+	t.Setenv("SUPABASE_BUCKET", "")
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -131,20 +134,55 @@ func TestLoadConfigRequiresJWTSecret(t *testing.T) {
 	}
 }
 
-func TestLoadConfigCookieNoneForcesSecure(t *testing.T) {
+func TestLoadConfigCookieNoneRequiresSecure(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
 	t.Setenv("JWT_SECRET", testJWTSecret)
 	t.Setenv("COOKIE_SAMESITE", "None")
 	t.Setenv("COOKIE_SECURE", "false")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error when SameSite=None without Secure")
+	}
+	t.Setenv("COOKIE_SECURE", "true")
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.CookieSameSite != http.SameSiteNoneMode {
-		t.Fatalf("SameSite=%v", cfg.CookieSameSite)
+	if cfg.CookieSameSite != http.SameSiteNoneMode || !cfg.CookieSecure {
+		t.Fatalf("SameSite=%v secure=%v", cfg.CookieSameSite, cfg.CookieSecure)
 	}
-	if !cfg.CookieSecure {
-		t.Fatal("SameSite=None must force Secure")
+}
+
+func TestLoadConfigRejectsWildcardCORS(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	t.Setenv("CORS_ORIGIN", "*")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error for wildcard CORS with credentials")
+	}
+	t.Setenv("CORS_ORIGIN", "https://doctalk.vercel.app,*")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error when CORS list includes wildcard")
+	}
+}
+
+func TestLoadConfigSupabaseKeysTogether(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	t.Setenv("SUPABASE_URL", "https://example.supabase.co")
+	t.Setenv("SUPABASE_SERVICE_ROLE_KEY", "")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error when only SUPABASE_URL is set")
+	}
+	t.Setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role-not-a-real-key")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SupabaseURL != "https://example.supabase.co" {
+		t.Fatalf("SupabaseURL=%q", cfg.SupabaseURL)
+	}
+	if cfg.SupabaseBucket != defaultSupabaseBucket {
+		t.Fatalf("bucket=%q", cfg.SupabaseBucket)
 	}
 }
 

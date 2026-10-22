@@ -119,8 +119,12 @@ func guestMiddleware(s *server) gin.HandlerFunc {
 			ttl = defaultGuestTTL
 		}
 		id := ""
-		if ck, err := c.Request.Cookie(guestCookieName); err == nil {
-			id, _ = parseGuestJWT(secret, ck.Value)
+		known := false
+		if ck, err := c.Request.Cookie(guestCookieName); err == nil && ck.Value != "" {
+			if parsed, perr := parseGuestJWT(secret, ck.Value); perr == nil {
+				id = parsed
+				known = true
+			}
 		}
 		if id == "" {
 			id = newGuestID()
@@ -146,7 +150,9 @@ func guestMiddleware(s *server) gin.HandlerFunc {
 			})
 		}
 		c.Set("guestID", id)
-		s.touchGuest(c.Request.Context(), id)
+		if known {
+			s.touchGuest(c.Request.Context(), id)
+		}
 		c.Next()
 	}
 }

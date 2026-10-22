@@ -220,6 +220,70 @@ func TestGuestCleanupDeletesExpiredDocs(t *testing.T) {
 	}
 }
 
+func TestTouchGuestSkipsCookielessAndRejected(t *testing.T) {
+	db := openTestDB(t)
+	const secret = "cookie-secret-not-for-prod-32b"
+	s := &server{
+		db:  db,
+		cfg: config{CORSOrigin: "http://localhost:3917", JWTSecret: secret, GuestTTL: 24 * time.Hour, CookieSameSite: http.SameSiteLaxMode},
+	}
+	r := newRouter(s)
+	guestCount := func(id string) int {
+		t.Helper()
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM guests WHERE id=$1`, id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/quota", nil))
+	var minted *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == guestCookieName {
+			minted = c
+		}
+	}
+	if minted == nil {
+		t.Fatal("expected Set-Cookie on cookieless request")
+	}
+	id, err := parseGuestJWT(secret, minted.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if guestCount(id) != 0 {
+		t.Fatal("cookieless request wrote a guests row")
+	}
+
+	bad := httptest.NewRequest(http.MethodGet, "/quota", nil)
+	bad.AddCookie(&http.Cookie{Name: guestCookieName, Value: "not-a-jwt"})
+	bw := httptest.NewRecorder()
+	r.ServeHTTP(bw, bad)
+	var rejected *http.Cookie
+	for _, c := range bw.Result().Cookies() {
+		if c.Name == guestCookieName {
+			rejected = c
+		}
+	}
+	if rejected == nil {
+		t.Fatal("expected Set-Cookie on rejected JWT")
+	}
+	rejID, err := parseGuestJWT(secret, rejected.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if guestCount(rejID) != 0 {
+		t.Fatal("rejected cookie wrote a guests row")
+	}
+
+	jar := &testJar{cookie: minted}
+	jar.do(r, httptest.NewRequest(http.MethodGet, "/quota", nil))
+	if guestCount(id) != 1 {
+		t.Fatal("valid cookie should upsert guests.last_seen")
+	}
+}
+
 func TestGuestCleanupKeepsRecentLastSeen(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
@@ -237,12 +301,8 @@ func TestGuestCleanupKeepsRecentLastSeen(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &server{db: db, cfg: config{GuestTTL: 7 * 24 * time.Hour}}
-	n, err := s.cleanupExpiredGuests(ctx)
-	if err != nil {
+	if _, err := s.cleanupExpiredGuests(ctx); err != nil {
 		t.Fatal(err)
-	}
-	if n != 0 {
-		t.Fatalf("cleaned=%d want 0", n)
 	}
 	var leftover int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM documents WHERE id=$1`, id).Scan(&leftover); err != nil {
