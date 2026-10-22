@@ -52,7 +52,8 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 
-		// ponytail: split on ';' — fine until a migration contains procedural SQL (DO $$ ... $$).
+		// ponytail: split on ';' after stripping -- comments. Upgrade if a migration
+		// contains quoted semicolons or procedural SQL (DO $$ ... $$).
 		for _, stmt := range sqlStatements(string(body)) {
 			if _, err := tx.ExecContext(ctx, stmt); err != nil {
 				_ = tx.Rollback()
@@ -74,7 +75,15 @@ func migrate(ctx context.Context, db *sql.DB) error {
 }
 
 func sqlStatements(sqlText string) []string {
-	parts := strings.Split(sqlText, ";")
+	var uncommented strings.Builder
+	for _, line := range strings.Split(sqlText, "\n") {
+		if i := strings.Index(line, "--"); i >= 0 {
+			line = line[:i]
+		}
+		uncommented.WriteString(line)
+		uncommented.WriteByte('\n')
+	}
+	parts := strings.Split(uncommented.String(), ";")
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		s := strings.TrimSpace(p)

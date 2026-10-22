@@ -9,6 +9,39 @@ import (
 	"testing"
 )
 
+func TestSQLStatementsIgnoresSemicolonsInLineComments(t *testing.T) {
+	got := sqlStatements(`
+-- free-tier Postgres; changing the dim later needs a new migration
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE TABLE t (id int);
+`)
+	if len(got) != 2 {
+		t.Fatalf("len=%d got=%q", len(got), got)
+	}
+	if !strings.HasPrefix(got[0], "CREATE EXTENSION") {
+		t.Fatalf("first = %q", got[0])
+	}
+	if !strings.HasPrefix(got[1], "CREATE TABLE") {
+		t.Fatalf("second = %q", got[1])
+	}
+}
+
+func TestInitMigrationStatementsAreSQL(t *testing.T) {
+	body, err := migrationFiles.ReadFile("migrations/0001_init.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmts := sqlStatements(string(body))
+	if len(stmts) == 0 {
+		t.Fatal("no statements")
+	}
+	for _, stmt := range stmts {
+		if !strings.HasPrefix(strings.ToUpper(stmt), "CREATE ") {
+			t.Fatalf("unexpected statement %q", stmt)
+		}
+	}
+}
+
 func TestEmbeddingDimMatchesMigration(t *testing.T) {
 	body, err := migrationFiles.ReadFile("migrations/0001_init.sql")
 	if err != nil {
