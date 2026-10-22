@@ -7,20 +7,36 @@ This repo is a monorepo:
 - `doctalk-server/` — HTTP API
 - `doctalk-client/` — web UI
 
-## Phase 1 (this PR)
+## Phase 2 (this PR)
 
-- Server `/health` reports database connectivity
-- SQL migrations: `vector` extension, `documents` and `chunks` tables
-- Config from environment variables (no secrets in git)
-- Local Postgres via docker compose (`pgvector/pgvector`)
-- Client page that calls `/health`
-- GitHub Actions CI that builds and tests both apps
+- `POST /documents` — upload a PDF (10 MiB default cap, `%PDF-` magic sniff, not the filename)
+- Files go through a `Storage` interface (`DiskStorage` for local dev; swap in Supabase Storage at deploy time)
+- Per-page text extraction, then Thai-aware chunking (see below)
+- Embeddings via `gemini-embedding-001` at **768** dims, batched, with 429 backoff
+- Document status: `uploading` → `extracting` → `embedding` → `done`, or `failed` with an error message
+- `GET /documents` and `GET /documents/:id` (status + chunk count)
+- Gemini is mocked in tests; CI does not need `GEMINI_API_KEY`
+
+### Thai-aware chunking
+
+Thai has no spaces between words. DocTalk does **not** use a dictionary segmenter (those usually need ICU/CGO). Each PDF page is split into a **700-rune window with 120-rune overlap**. If a newline or space sits in the last 80 runes of a window, the cut moves there so mixed Thai/English prefers paragraph or word boundaries. Every chunk stores its 1-based `page_number` for citations in Phase 3.
 
 ### Embedding dimension
 
-`chunks.embedding` is **`vector(768)`**.
+`chunks.embedding` is **`vector(768)`**. That matches `gemini-embedding-001` with `outputDimensionality=768`. Values are L2-normalized (required by Gemini for non-3072 dims). The API key is read from `GEMINI_API_KEY` only, sent as `x-goog-api-key`, and never logged or committed.
 
-That matches `gemini-embedding-001` with `outputDimensionality=768` (Matryoshka; also the native size of `text-embedding-004`). 768 is the storage-friendly size for free-tier Postgres (Phase 6: Supabase). The same model also supports 1536 and 3072; changing the column later needs a new migration.
+## Local ports
+
+Defaults avoid collisions with another project on 5433 / 5173 / 8080:
+
+| Service | Env | Default |
+| --- | --- | --- |
+| Postgres (host) | `DB_PORT` | 5435 |
+| API | `API_PORT` (then `PORT`) | 8081 |
+| Vite | `VITE_PORT` | 5174 |
+| Browser → API | `VITE_API_URL` | http://localhost:8081 |
+
+Inside docker-compose, Postgres is still 5432 on the private network. `DB_PORT` / `API_PORT` only change the **host** bindings. The server prefers `API_PORT`, then `PORT` (Render), then 8081.
 
 ## Setup
 
@@ -47,24 +63,26 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    Windows cmd.exe:
 
    ```
-   set DATABASE_URL=postgres://doctalk:doctalk@localhost:5432/doctalk?sslmode=disable
-   set PORT=8080
-   set CORS_ORIGIN=http://localhost:5173
+   set DATABASE_URL=postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable
+   set API_PORT=8081
+   set CORS_ORIGIN=http://localhost:5174
+   set GEMINI_API_KEY=your-free-tier-key
    cd doctalk-server && go run .
    ```
 
    Unix:
 
    ```
-   export DATABASE_URL=postgres://doctalk:doctalk@localhost:5432/doctalk?sslmode=disable
-   export PORT=8080
-   export CORS_ORIGIN=http://localhost:5173
+   export DATABASE_URL=postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable
+   export API_PORT=8081
+   export CORS_ORIGIN=http://localhost:5174
+   export GEMINI_API_KEY=your-free-tier-key
    cd doctalk-server && go run .
    ```
 
-   The process binds to `0.0.0.0:$PORT` (Render-compatible). Open http://localhost:8080/health
+   The process binds to `0.0.0.0:$API_PORT` (or `$PORT`). Open http://localhost:8081/health
 
-4. Run the client:
+4. Run the client (Vite loads the repo-root `.env` via `envDir`):
 
    ```
    cd doctalk-client
@@ -72,9 +90,19 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    npm run dev
    ```
 
-   Vite proxies `/health` to `http://localhost:8080`. To call the API by absolute URL instead, set `VITE_API_URL` (see `.env.example`).
+   Vite listens on `VITE_PORT` (5174) and proxies `/health` and `/documents` to `VITE_API_URL`.
 
-`GEMINI_API_KEY` is unused in Phase 1. Add a real key locally before Phase 2; use the Gemini **free tier**. Do not put the key in git or CI.
+Use the Gemini **free tier**. Do not put the key in git or CI.
+
+### Upload a PDF
+
+```
+curl -s -F file=@paper.pdf http://localhost:8081/documents
+curl -s http://localhost:8081/documents
+curl -s http://localhost:8081/documents/<id>
+```
+
+`POST` returns **202** and processing continues in the background. Poll `GET /documents/:id` until `status` is `done` or `failed`.
 
 ## Makefile
 
@@ -91,7 +119,7 @@ make compose-up
 
 ## Tests
 
-Server (skips the migration integration test unless `DATABASE_URL` is set):
+Server (skips DB integration tests unless `DATABASE_URL` is set):
 
 ```
 cd doctalk-server && go test ./...
@@ -103,11 +131,12 @@ Client:
 cd doctalk-client && npm test
 ```
 
-CI runs both, with a `pgvector/pgvector:pg16` service for the server job.
+CI runs both, with a `pgvector/pgvector:pg16` service for the server job. Gemini is always mocked.
 
 ## Roadmap
 
-- **Phase 2:** PDF upload, text extraction, Thai-aware chunking, embedding.
+- **Phase 1:** health, migrations, local Postgres, CI. (done)
+- **Phase 2:** PDF upload, text extraction, Thai-aware chunking, embedding. (this PR)
 - **Phase 3:** ask endpoint with top-k retrieval, Gemini answers with citations, SSE streaming.
 - **Phase 4:** chat UI.
 - **Phase 5:** guest auth and rate limiting.

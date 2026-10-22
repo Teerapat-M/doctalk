@@ -1,15 +1,31 @@
 package main
 
 import (
+	"database/sql"
 	"net/http"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 )
 
-func newRouter(db pinger, cfg config) *gin.Engine {
+type server struct {
+	ping    pinger
+	db      *sql.DB
+	cfg     config
+	store   Storage
+	embed   Embedder
+	extract Extractor
+	wg      sync.WaitGroup
+}
+
+func newRouter(s *server) *gin.Engine {
 	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery(), cors(cfg.CORSOrigin))
-	r.GET("/health", healthHandler(db))
+	r.Use(gin.Logger(), gin.Recovery(), cors(s.cfg.CORSOrigin))
+	r.MaxMultipartMemory = 8 << 20
+	r.GET("/health", healthHandler(s.ping))
+	r.POST("/documents", s.uploadDocument)
+	r.GET("/documents", s.listDocuments)
+	r.GET("/documents/:id", s.getDocument)
 	return r
 }
 

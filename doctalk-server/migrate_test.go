@@ -100,6 +100,22 @@ func TestMigrateCreatesDocumentsChunksAndVectorDim(t *testing.T) {
 	if err := migrate(ctx, db); err != nil {
 		t.Fatalf("migrate should be idempotent: %v", err)
 	}
+
+	var hasStatus, hasPage bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'documents' AND column_name = 'status'
+		)`).Scan(&hasStatus); err != nil || !hasStatus {
+		t.Fatalf("documents.status missing: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'chunks' AND column_name = 'page_number'
+		)`).Scan(&hasPage); err != nil || !hasPage {
+		t.Fatalf("chunks.page_number missing: %v", err)
+	}
 }
 
 func assertTable(t *testing.T, db *sql.DB, name string) {
