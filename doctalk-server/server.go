@@ -15,6 +15,7 @@ type server struct {
 	store   Storage
 	embed   Embedder
 	chat    ChatStreamer
+	quiz    Quizzer
 	extract Extractor
 	wg      sync.WaitGroup
 }
@@ -27,7 +28,9 @@ func newRouter(s *server) *gin.Engine {
 	r.POST("/documents", s.uploadDocument)
 	r.GET("/documents", s.listDocuments)
 	r.GET("/documents/:id", s.getDocument)
+	r.POST("/documents/:id/ingest", s.ingestDocument)
 	r.POST("/ask", s.ask)
+	r.POST("/quiz", s.generateQuiz)
 	return r
 }
 

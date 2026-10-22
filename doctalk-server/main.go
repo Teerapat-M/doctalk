@@ -30,9 +30,11 @@ func run() error {
 
 	var embed Embedder
 	var chat ChatStreamer
+	var quiz Quizzer
 	if cfg.GeminiAPIKey != "" {
 		embed = newGeminiEmbedder(cfg)
 		chat = newGeminiChat(cfg)
+		quiz = newGeminiQuiz(cfg)
 	}
 
 	s := &server{
@@ -42,6 +44,7 @@ func run() error {
 		store:   newDiskStorage(cfg.StorageDir),
 		embed:   embed,
 		chat:    chat,
+		quiz:    quiz,
 		extract: pdfExtractor{},
 	}
 	r := newRouter(s)

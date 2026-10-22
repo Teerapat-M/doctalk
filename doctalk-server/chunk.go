@@ -22,9 +22,14 @@ const (
 )
 
 type Chunk struct {
-	Index int
-	Page  int
-	Text  string
+	Index       int
+	Page        int
+	SheetName   string
+	RowNumber   int
+	Text        string
+	Question    string
+	Answer      string
+	Explanation string
 }
 
 func chunkPages(pages []pageText) []Chunk {

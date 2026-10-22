@@ -1,0 +1,45 @@
+/* Design tokens for DocTalk.
+   Placeholder values until the Penpot "Doctalk" kit is applied.
+   Swap these variables only — components consume tokens, not raw colors. */
+:root {
+  /* Color */
+  --dt-color-bg: #f6f4ef;
+  --dt-color-surface: #ffffff;
+  --dt-color-surface-muted: #efece6;
+  --dt-color-text: #1b1b1b;
+  --dt-color-text-muted: #5c574e;
+  --dt-color-border: #e2ddd4;
+  --dt-color-accent: #2f6f4e;
+  --dt-color-accent-text: #ffffff;
+  --dt-color-accent-soft: #e4f0e8;
+  --dt-color-correct: #2f6f4e;
+  --dt-color-danger: #9b2c2c;
+  --dt-color-focus: #2f6f4e;
+
+  /* Typography */
+  --dt-font-sans: "Segoe UI", system-ui, sans-serif;
+  --dt-font-size-title: 1.75rem;
+  --dt-font-size-heading: 1.1rem;
+  --dt-font-size-body: 1rem;
+  --dt-font-size-small: 0.875rem;
+  --dt-font-weight-regular: 400;
+  --dt-font-weight-semibold: 600;
+  --dt-line-height: 1.5;
+
+  /* Spacing */
+  --dt-space-1: 0.25rem;
+  --dt-space-2: 0.5rem;
+  --dt-space-3: 0.75rem;
+  --dt-space-4: 1rem;
+  --dt-space-5: 1.25rem;
+  --dt-space-6: 1.5rem;
+  --dt-space-8: 2.5rem;
+
+  /* Radius */
+  --dt-radius-sm: 4px;
+  --dt-radius-md: 8px;
+  --dt-radius-lg: 12px;
+
+  /* Layout */
+  --dt-max-width: 44rem;
+}

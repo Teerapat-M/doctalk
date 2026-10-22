@@ -27,6 +27,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("ASK_TOP_K", "")
 	t.Setenv("ASK_TOP_K_MAX", "")
 	t.Setenv("ASK_TIMEOUT_SECONDS", "")
+	t.Setenv("GEMINI_QUIZ_MODEL", "")
+	t.Setenv("QUIZ_N_MAX", "")
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -57,6 +59,29 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.AskTimeout != time.Duration(defaultAskTimeoutSec)*time.Second {
 		t.Fatalf("AskTimeout=%s", cfg.AskTimeout)
+	}
+	if cfg.GeminiQuizModel != cfg.GeminiChatModel {
+		t.Fatalf("GeminiQuizModel=%q want chat default", cfg.GeminiQuizModel)
+	}
+	if cfg.QuizNMax != defaultQuizNMax {
+		t.Fatalf("QuizNMax=%d", cfg.QuizNMax)
+	}
+}
+
+func TestLoadConfigQuizModelAndCap(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("GEMINI_CHAT_MODEL", "gemini-3.8-flash")
+	t.Setenv("GEMINI_QUIZ_MODEL", "gemini-quiz")
+	t.Setenv("QUIZ_N_MAX", "99")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GeminiQuizModel != "gemini-quiz" {
+		t.Fatalf("GeminiQuizModel=%q", cfg.GeminiQuizModel)
+	}
+	if cfg.QuizNMax != 50 {
+		t.Fatalf("QuizNMax cap=%d", cfg.QuizNMax)
 	}
 }
 
