@@ -40,8 +40,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.Port != defaultAPIPort {
 		t.Fatalf("Port = %q, want %s", cfg.Port, defaultAPIPort)
 	}
-	if cfg.CORSOrigin != "*" {
-		t.Fatalf("CORSOrigin = %q, want *", cfg.CORSOrigin)
+	if cfg.CORSOrigin != defaultCORSOrigin {
+		t.Fatalf("CORSOrigin = %q, want %s", cfg.CORSOrigin, defaultCORSOrigin)
 	}
 	if cfg.GeminiEmbeddingModel != defaultEmbedModel {
 		t.Fatalf("GeminiEmbeddingModel = %q", cfg.GeminiEmbeddingModel)

@@ -60,28 +60,61 @@ func detectKind(data []byte, filename string) string {
 }
 
 func isXLSX(data []byte) bool {
+	ok, macros := inspectXLSX(data)
+	return ok && !macros
+}
+
+func hasVBAProject(data []byte) bool {
+	_, macros := inspectXLSX(data)
+	return macros
+}
+
+func inspectXLSX(data []byte) (ok bool, macros bool) {
 	if !bytes.HasPrefix(data, zipMagic) {
-		return false
+		return false, false
 	}
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return false
+		return false, false
 	}
 	hasTypes := false
 	hasXL := false
 	for _, f := range zr.File {
-		name := strings.ToLower(f.Name)
+		name := strings.ToLower(strings.ReplaceAll(f.Name, "\\", "/"))
 		if name == "[content_types].xml" {
 			hasTypes = true
 		}
 		if strings.HasPrefix(name, "xl/") {
 			hasXL = true
 		}
-		if hasTypes && hasXL {
-			return true
+		if name == "xl/vbaproject.bin" || strings.HasSuffix(name, "/vbaproject.bin") {
+			macros = true
 		}
 	}
-	return false
+	return hasTypes && hasXL, macros
+}
+
+func validateIngestMapping(sheets []sheetInfo, sheet string, columns columnMap) error {
+	var found *sheetInfo
+	for i := range sheets {
+		if sheets[i].Name == sheet {
+			found = &sheets[i]
+			break
+		}
+	}
+	if found == nil {
+		return fmt.Errorf("unknown sheet %q", sheet)
+	}
+	idx := headerIndex(found.Headers)
+	for _, name := range []string{columns.Content, columns.Question, columns.Answer, columns.Explanation} {
+		if name == "" {
+			continue
+		}
+		if _, ok := idx[name]; !ok {
+			return fmt.Errorf("unknown column %q", name)
+		}
+	}
+	return nil
 }
 
 func isCSV(data []byte, filename string) bool {

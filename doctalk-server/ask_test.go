@@ -261,6 +261,14 @@ func TestAskRequiresJSONContentType(t *testing.T) {
 	if w.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
+
+	req = httptest.NewRequest(http.MethodPost, "/ask", strings.NewReader(`{"question":"","document_ids":["00000000-0000-0000-0000-000000000001"]}`))
+	req.Header.Set("Content-Type", "Application/JSON; charset=utf-8")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("case-insensitive json status=%d body=%s", w.Code, w.Body.String())
+	}
 }
 
 func TestAskRejectsTrailingJSONJunk(t *testing.T) {
@@ -269,9 +277,12 @@ func TestAskRejectsTrailingJSONJunk(t *testing.T) {
 		embed: &fakeEmbedder{},
 		chat:  &fakeChat{},
 	})
-	w := postAsk(r, `{"question":"hi","document_ids":["00000000-0000-0000-0000-000000000001"]} extra`)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	base := `{"question":"hi","document_ids":["00000000-0000-0000-0000-000000000001"]}`
+	for _, body := range []string{base + " extra", base + "}", base + "]"} {
+		w := postAsk(r, body)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("body=%q status=%d resp=%s", body, w.Code, w.Body.String())
+		}
 	}
 }
 
