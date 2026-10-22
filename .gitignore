@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+
+node_modules/
+dist/
+coverage/
+.vite/
+
+*.exe
+*.test
+*.out
+doctalk-server/doctalk-server
+
+.DS_Store
+Thumbs.db
+*.log

@@ -1,0 +1,4 @@
+doctalk-server
+*.exe
+Dockerfile
+.dockerignore
