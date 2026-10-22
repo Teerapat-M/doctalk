@@ -107,7 +107,7 @@ func (s *server) generateQuiz(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
 	defer cancel()
 
-	if err := s.ensureAskDocs(ctx, docIDs); err != nil {
+	if err := s.ensureAskDocs(ctx, docIDs, guestIDFrom(c)); err != nil {
 		if errors.Is(err, errAskDocsBadID) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid document_id"})
 			return
@@ -134,6 +134,17 @@ func (s *server) generateQuiz(c *gin.Context) {
 		return
 	}
 
+	res, rejected := s.reserveQuota(c, rateQuiz)
+	if rejected {
+		return
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			res.release()
+		}
+	}()
+
 	var questions []quizQuestionJSON
 	switch mode {
 	case "from_columns":
@@ -150,6 +161,7 @@ func (s *server) generateQuiz(c *gin.Context) {
 			return
 		}
 	}
+	keep = true
 	c.JSON(http.StatusOK, quizResponse{Questions: questions})
 }
 

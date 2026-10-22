@@ -17,15 +17,17 @@ type server struct {
 	chat    ChatStreamer
 	quiz    Quizzer
 	extract Extractor
+	limits  *rateLimiter
 	wg      sync.WaitGroup
 }
 
 func newRouter(s *server) *gin.Engine {
 	r := gin.New()
 	_ = r.SetTrustedProxies(s.cfg.TrustedProxies)
-	r.Use(gin.Logger(), gin.Recovery(), cors(s.cfg.CORSOrigin))
+	r.Use(gin.Logger(), gin.Recovery(), cors(s.cfg.CORSOrigin), guestMiddleware(s))
 	r.MaxMultipartMemory = 8 << 20
 	r.GET("/health", healthHandler(s.ping))
+	r.GET("/quota", s.getQuota)
 	r.POST("/documents", s.uploadDocument)
 	r.GET("/documents", s.listDocuments)
 	r.GET("/documents/:id", s.getDocument)
@@ -53,6 +55,8 @@ func cors(originCSV string) gin.HandlerFunc {
 		case reqOrigin != "":
 			if _, ok := allow[reqOrigin]; ok {
 				c.Header("Access-Control-Allow-Origin", reqOrigin)
+				c.Header("Access-Control-Allow-Credentials", "true")
+				c.Header("Access-Control-Expose-Headers", "Retry-After")
 				c.Header("Vary", "Origin")
 			}
 		}

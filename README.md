@@ -38,7 +38,7 @@ Content-Type: application/json
 
 `ASK_TIMEOUT_SECONDS` (60) bounds the whole request. Client disconnect cancels the upstream Gemini call. Gemini 429/503 retries are capped (`GEMINI_RETRY_BUDGET_SECONDS` default 8, at most 3 attempts) well under that timeout; if they still fail, the client gets an SSE `error` with the redacted upstream reason (for example `HTTP 503 UNAVAILABLE`), not a generic timeout. Optional `GEMINI_CHAT_FALLBACK_MODEL` is tried **once** after the primary returns 503; leave it unset unless you have a working free-tier model.
 
-Validation errors stay JSON **before** the stream (`400` / `404` / `409` / `415` / `503` if the API key is missing). Once the request is valid and the documents are ready, the response is **SSE** (`text/event-stream`). Query embedding, retrieval, and chat failures after that are SSE `error` events (including Gemini 429). Delta / final / error are the only stream events. A not-found answer (empty retrieval, or Gemini's `NOT_FOUND` first-line signal) sends `final` with `"citations":[]`.
+Validation errors stay JSON **before** the stream (`400` / `404` / `409` / `415` / `429` / `503` if the API key is missing). Rate limits on `/ask` return JSON **429** with `Retry-After` before SSE starts — never an SSE `error` event. Once the request is valid, under quota, and the documents are ready, the response is **SSE** (`text/event-stream`). Query embedding, retrieval, and chat failures after that are SSE `error` events (including Gemini 429). Delta / final / error are the only stream events. A not-found answer (empty retrieval, or Gemini's `NOT_FOUND` first-line signal) sends `final` with `"citations":[]`.
 
 ### SSE events
 
@@ -146,9 +146,9 @@ Chat model: `GEMINI_CHAT_MODEL` (default `gemini-3.8-flash`). Quiz model: `GEMIN
 
 ## Phase 4 — chat UI
 
-The Vite app (`doctalk-client`, port **4317**, `strictPort`) is the chat and quiz UI. Tokens live in `src/theme.css` from the Penpot **Doctalk** file (Core / Light / Dark, desktop 1440 and mobile 390). Frames **01–04** were empty in Penpot, so landing/workspace/error are assembled from those tokens. Frames **05a–c** (Excel upload / sheet & columns / importing), **06** (quiz setup), **07a–b** (taking / show answers), and **08a–d** (generating / empty / error / quota) drive the Excel and quiz UI, including Option Row, Toggle, Stepper, Column Mapper (Question / Answer / Explanation / Ignore), Skeleton, and Progress.
+The Vite app (`doctalk-client`, port **3917**, `strictPort`) is the chat and quiz UI. Tokens live in `src/theme.css` from the Penpot **Doctalk** file (Core / Light / Dark, desktop 1440 and mobile 390). Frames **01–04** were empty in Penpot, so landing/workspace/error are assembled from those tokens. Frames **05a–c** (Excel upload / sheet & columns / importing), **06** (quiz setup), **07a–b** (taking / show answers), and **08a–d** (generating / empty / error / quota) drive the Excel and quiz UI, including Option Row, Toggle, Stepper, Column Mapper (Question / Answer / Explanation / Ignore), Skeleton, and Progress.
 
-`VITE_API_URL` is optional; leave it unset so the browser talks to Vite and the proxy forwards `/health`, `/documents`, `/ask`, and `/quiz`. Guest quiz quota (5/day, reset 07:00 Asia/Bangkok) is stored in `localStorage` until Phase 5 auth.
+`VITE_API_URL` is optional; leave it unset so the browser talks to Vite and the proxy forwards `/health`, `/documents`, `/ask`, `/quiz`, and `/quota`. Guest quiz quota is server state (`GET /quota`), not `localStorage`.
 
 Hash routes:
 
@@ -160,9 +160,42 @@ Hash routes:
 | `#/not-found` | Missing document or unknown route. |
 | `#/error` | Error state (including a redacted SSE `error` payload shown in the chat thread). |
 
-Light/dark follows `prefers-color-scheme` and a header toggle (`localStorage` key `dt-theme`). Below 720px the document list is a drawer. Vitest covers the SSE parser (`ask.test.ts`), quiz toggles and Option Row states (`quizToggles.test.ts`), column picker roles (`columnPicker.test.ts`), and the guest quota helper (`quizQuota.test.ts`); `npm test` runs in CI.
+Light/dark follows `prefers-color-scheme` and a header toggle (`localStorage` key `dt-theme`). Below 720px the document list is a drawer. Vitest covers the SSE parser (`ask.test.ts`), quiz toggles and Option Row states (`quizToggles.test.ts`), column picker roles (`columnPicker.test.ts`), and `GET /quota` (`quizQuota.test.ts`); `npm test` runs in CI.
 
 The client quiz UI picks a source and question count, shows A–D, has a global and per-question answer-key toggle, and a regenerate button. Colors, type, spacing, and radius live in `doctalk-client/src/theme.css` as CSS variables from the Penpot **Doctalk** file (Core / Light / Dark). Ready sources show `page_count` for PDFs and `row_count` for spreadsheets.
+
+## Phase 5 — guest auth and rate limiting
+
+Anonymous guests get an HS256 JWT in the httpOnly `dt_guest` cookie, signed with `JWT_SECRET`. Documents are scoped to that guest id. The server **refuses to start** if `JWT_SECRET` is missing or shorter than 32 bytes.
+
+Generate a local secret (never commit the real value):
+
+```
+openssl rand -base64 32
+```
+
+Windows cmd.exe: `openssl rand -base64 32` then `set JWT_SECRET=...`
+
+Cookie flags: `COOKIE_SAMESITE` (default `Lax`) and `COOKIE_SECURE` (default false) for local Vite on the same site. For a Vercel client talking to Render, set `COOKIE_SAMESITE=None` and `COOKIE_SECURE=true`. The client sends `credentials: "include"`. `CORS_ORIGIN` is an explicit allowlist (both `localhost` and `127.0.0.1`); it never pairs `*` with `Allow-Credentials`.
+
+`GET /quota` returns used/remaining/limit for quiz, ask, and ingest. The quiz quota-reached frame reads that payload. Daily quiz quota is stored in Postgres per guest (survives restarts) and resets at `QUIZ_RESET_HOUR` (7) in **Asia/Bangkok**. Per-IP quiz hits are a looser in-memory abuse cap (`QUIZ_IP_PER_DAY`). Ask and ingest per-minute caps stay in memory. A request is counted only after it passes validation; upstream Gemini failures are not charged.
+
+| Env | Default |
+| --- | --- |
+| `QUIZ_PER_DAY` | 5, window resets at `QUIZ_RESET_HOUR` (7) in **Asia/Bangkok** |
+| `QUIZ_IP_PER_DAY` | 20 (loose per-IP abuse cap) |
+| `ASK_PER_MINUTE` | 20 |
+| `INGEST_PER_MINUTE` | 10 |
+| `MAX_UPLOAD_BYTES` | 10485760 (10 MiB) |
+| `MAX_PAGES` | 50 |
+| `MAX_ROWS` | 2000 |
+| `GUEST_TTL_HOURS` | 168 (first sweep at startup, then hourly; expired by `last_seen`) |
+| `COOKIE_SAMESITE` | `Lax` (`None` requires Secure, for Vercel → Render) |
+| `COOKIE_SECURE` | false locally; true with `SameSite=None` |
+
+Over quota, `/ask`, `/quiz`, and ingest return **429** with `Retry-After` and `{"error":"..."}`. `/ask` does this as JSON **before** the SSE stream starts.
+
+The Vite default port is **3917** (`strictPort`) because 4317 is taken on the owner's PC. If 3917 is busy, set `VITE_PORT` to a free port **and** set `CORS_ORIGIN` to both hostnames on that port, for example `http://localhost:3920,http://127.0.0.1:3920`.
 
 ### Thai-aware chunking
 
@@ -174,17 +207,17 @@ Thai has no spaces between words. DocTalk does **not** use a dictionary segmente
 
 ## Local ports
 
-Defaults avoid collisions with 5433 / 5173 / 8080 and with 8081 / 5174 / 5191 on the owner's PC:
+Defaults avoid collisions with 5433 / 5173 / 8080 and with 8081 / 5174 / 5191 / 4317 on the owner's PC:
 
 | Service | Env | Default |
 | --- | --- | --- |
 | Postgres (host) | `DB_PORT` | 5435 |
 | API | `API_PORT` (then `PORT`) | 8181 |
-| Vite | `VITE_PORT` | 4317 (bound to `127.0.0.1`, `strictPort`) |
-| Browser → API | `VITE_API_URL` | unset (Vite proxies `/health`, `/documents`, `/ask`, `/quiz`) |
-| CORS | `CORS_ORIGIN` | `http://localhost:4317,http://127.0.0.1:4317` |
+| Vite | `VITE_PORT` | 3917 (bound to `127.0.0.1`, `strictPort`) |
+| Browser → API | `VITE_API_URL` | unset (Vite proxies `/health`, `/documents`, `/ask`, `/quiz`, `/quota`) |
+| CORS | `CORS_ORIGIN` | `http://localhost:3917,http://127.0.0.1:3917` (must match `VITE_PORT` on both hostnames) |
 
-Inside docker-compose, Postgres is still 5432 on the private network. `DB_PORT` / `API_PORT` only change the **host** bindings. The server prefers `API_PORT`, then `PORT` (Render), then 8181. If Vite's port is taken, it exits with a message to set `VITE_PORT`.
+Inside docker-compose, Postgres is still 5432 on the private network. `DB_PORT` / `API_PORT` only change the **host** bindings. The server prefers `API_PORT`, then `PORT` (Render), then 8181. If Vite's port is taken, it exits with a message to set `VITE_PORT` and a matching `CORS_ORIGIN` for `localhost` and `127.0.0.1`.
 
 ## Setup
 
@@ -213,7 +246,8 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    ```
    set DATABASE_URL=postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable
    set API_PORT=8181
-   set CORS_ORIGIN=http://localhost:4317,http://127.0.0.1:4317
+   set CORS_ORIGIN=http://localhost:3917,http://127.0.0.1:3917
+   set JWT_SECRET=replace-with-openssl-rand-base64-32
    set GEMINI_API_KEY=your-free-tier-key
    set GEMINI_BASE_URL=https://generativelanguage.googleapis.com
    set GEMINI_CHAT_MODEL=gemini-3.8-flash
@@ -226,7 +260,8 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    ```
    export DATABASE_URL=postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable
    export API_PORT=8181
-   export CORS_ORIGIN=http://localhost:4317,http://127.0.0.1:4317
+   export CORS_ORIGIN=http://localhost:3917,http://127.0.0.1:3917
+   export JWT_SECRET=replace-with-openssl-rand-base64-32
    export GEMINI_API_KEY=your-free-tier-key
    export GEMINI_BASE_URL=https://generativelanguage.googleapis.com
    export GEMINI_CHAT_MODEL=gemini-3.8-flash
@@ -244,7 +279,7 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    npm run dev
    ```
 
-   Vite listens on `VITE_PORT` (4317) at `127.0.0.1` and proxies `/health`, `/documents`, `/ask`, and `/quiz` to the API. Leave `VITE_API_URL` unset so the browser talks to Vite (same origin) instead of calling `localhost` while Vite prints `http://127.0.0.1:4317`. `CORS_ORIGIN` still allows both hostnames if the client is pointed at the API directly. Open http://127.0.0.1:4317 — landing, upload, workspace chat, and quiz are hash-routed (`#/`, `#/workspace/:id`, `#/quiz`).
+   Vite listens on `VITE_PORT` (3917) at `127.0.0.1` and proxies `/health`, `/documents`, `/ask`, `/quiz`, and `/quota` to the API. Leave `VITE_API_URL` unset so the browser talks to Vite (same origin) instead of calling `localhost` while Vite prints `http://127.0.0.1:3917`. `CORS_ORIGIN` still allows both hostnames if the client is pointed at the API directly. Open http://127.0.0.1:3917 — landing, upload, workspace chat, and quiz are hash-routed (`#/`, `#/workspace/:id`, `#/quiz`).
 
 Use the Gemini **free tier**. Do not put the key in git or CI.
 
@@ -351,6 +386,6 @@ CI runs both, with a `pgvector/pgvector:pg16` service for the server job. Gemini
 - **Phase 2:** PDF upload, text extraction, Thai-aware chunking, embedding.
 - **Phase 3:** ask endpoint with top-k retrieval, Gemini answers with citations, SSE streaming.
 - **Phase 3.5:** Excel/CSV ingest, quiz generation, quiz UI. (done)
-- **Phase 4:** chat UI. (this PR)
-- **Phase 5:** guest auth and rate limiting.
+- **Phase 4:** chat UI. (done)
+- **Phase 5:** guest auth and rate limiting. (this PR)
 - **Phase 6:** deploy (Render server, Vercel client, Supabase Postgres, all free tiers).

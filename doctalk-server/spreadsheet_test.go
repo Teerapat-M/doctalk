@@ -85,7 +85,7 @@ func TestMapSheetRowsQuestionAndContent(t *testing.T) {
 		Question:    "คำถาม",
 		Answer:      "คำตอบ",
 		Explanation: "คำอธิบาย",
-	})
+	}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestMapSheetRowsQuestionAndContent(t *testing.T) {
 		t.Fatalf("content=%q", rows[0].Content)
 	}
 
-	contentRows, err := loadSheetRows(data, kindXLSX, "เนื้อหา", columnMap{Content: "เนื้อหา"})
+	contentRows, err := loadSheetRows(data, kindXLSX, "เนื้อหา", columnMap{Content: "เนื้อหา"}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestMapSheetRowsQuestionAndContent(t *testing.T) {
 		Question:    "question",
 		Answer:      "answer",
 		Explanation: "explanation",
-	})
+	}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,15 +124,22 @@ func TestMapSheetRowsQuestionAndContent(t *testing.T) {
 	}
 }
 
+func TestMapSheetRowsCapsRows(t *testing.T) {
+	rows := [][]string{{"a"}, {"1"}, {"2"}, {"3"}}
+	if _, err := mapSheetRows(rows, columnMap{Content: "a"}, 1); err == nil || !strings.Contains(err.Error(), "too many rows") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestMapSheetRowsRejectsBothOrNeither(t *testing.T) {
 	rows := [][]string{{"a", "b"}, {"1", "2"}}
-	if _, err := mapSheetRows(rows, columnMap{}); err == nil {
+	if _, err := mapSheetRows(rows, columnMap{}, 0); err == nil {
 		t.Fatal("expected error for missing mapping")
 	}
-	if _, err := mapSheetRows(rows, columnMap{Content: "a", Question: "b"}); err == nil {
+	if _, err := mapSheetRows(rows, columnMap{Content: "a", Question: "b"}, 0); err == nil {
 		t.Fatal("expected error for both mappings")
 	}
-	if _, err := mapSheetRows(rows, columnMap{Content: "missing"}); err == nil {
+	if _, err := mapSheetRows(rows, columnMap{Content: "missing"}, 0); err == nil {
 		t.Fatal("expected unknown column")
 	}
 }

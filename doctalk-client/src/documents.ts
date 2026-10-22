@@ -1,3 +1,5 @@
+import { apiFetch } from "./api";
+
 export type SheetInfo = {
   name: string;
   headers: string[];
@@ -30,7 +32,7 @@ export function documentsUrl(baseUrl: string, id?: string): string {
 }
 
 export async function fetchDocuments(baseUrl: string): Promise<DocumentRecord[]> {
-  const res = await fetch(documentsUrl(baseUrl));
+  const res = await apiFetch(documentsUrl(baseUrl));
   if (!res.ok) {
     throw new Error(`documents failed: ${res.status}`);
   }
@@ -40,7 +42,7 @@ export async function fetchDocuments(baseUrl: string): Promise<DocumentRecord[]>
 export async function uploadDocument(baseUrl: string, file: File): Promise<DocumentRecord> {
   const body = new FormData();
   body.append("file", file);
-  const res = await fetch(documentsUrl(baseUrl), { method: "POST", body });
+  const res = await apiFetch(documentsUrl(baseUrl), { method: "POST", body });
   if (!res.ok) {
     throw new Error(await readError(res, `upload failed: ${res.status}`));
   }
@@ -53,7 +55,7 @@ export async function ingestDocument(
   sheet: string,
   columns: ColumnMap,
 ): Promise<DocumentRecord> {
-  const res = await fetch(`${documentsUrl(baseUrl, id)}/ingest`, {
+  const res = await apiFetch(`${documentsUrl(baseUrl, id)}/ingest`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sheet, columns }),
@@ -65,7 +67,7 @@ export async function ingestDocument(
 }
 
 export async function fetchDocument(baseUrl: string, id: string): Promise<DocumentRecord> {
-  const res = await fetch(documentsUrl(baseUrl, id));
+  const res = await apiFetch(documentsUrl(baseUrl, id));
   if (res.status === 404) {
     throw new Error("not found");
   }

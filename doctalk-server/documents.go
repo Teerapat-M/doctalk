@@ -116,13 +116,24 @@ func (s *server) uploadDocument(c *gin.Context) {
 		status = statusMapping
 	}
 
+	res, rejected := s.reserveQuota(c, rateIngest)
+	if rejected {
+		return
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			res.release()
+		}
+	}()
+
 	ctx := c.Request.Context()
 	var id string
 	err = s.db.QueryRowContext(ctx, `
-		INSERT INTO documents (filename, content_type, byte_size, status, storage_key, source_kind, sheets_json)
-		VALUES ($1, $2, $3, $4, '', $5, $6)
+		INSERT INTO documents (filename, content_type, byte_size, status, storage_key, source_kind, sheets_json, guest_id)
+		VALUES ($1, $2, $3, $4, '', $5, $6, $7)
 		RETURNING id
-	`, filename, ctype, int64(len(data)), status, kind, sheetsJSON(sheets)).Scan(&id)
+	`, filename, ctype, int64(len(data)), status, kind, sheetsJSON(sheets), guestIDFrom(c)).Scan(&id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create document"})
 		return
@@ -144,11 +155,13 @@ func (s *server) uploadDocument(c *gin.Context) {
 		s.enqueueProcess(id, key)
 	}
 
-	doc, err := s.loadDocument(ctx, id)
+	doc, err := s.loadDocument(ctx, id, guestIDFrom(c))
 	if err != nil {
+		keep = true
 		c.JSON(http.StatusAccepted, gin.H{"id": id, "status": status})
 		return
 	}
+	keep = true
 	c.JSON(http.StatusAccepted, doc)
 }
 
@@ -185,6 +198,10 @@ func (s *server) process(ctx context.Context, id, key string) {
 		s.fail(ctx, id, fmt.Errorf("extract: %w", err))
 		return
 	}
+	if max := s.cfg.MaxPages; max > 0 && len(pages) > max {
+		s.fail(ctx, id, fmt.Errorf("too many pages (max %d)", max))
+		return
+	}
 	chunks := chunkPages(pages)
 	if len(chunks) == 0 {
 		s.fail(ctx, id, fmt.Errorf("extract: no extractable text"))
@@ -219,7 +236,7 @@ func (s *server) listDocuments(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "server is not configured"})
 		return
 	}
-	docs, err := s.loadDocuments(c.Request.Context(), "")
+	docs, err := s.loadDocuments(c.Request.Context(), "", guestIDFrom(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list documents"})
 		return
@@ -244,7 +261,7 @@ func (s *server) getDocument(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "server is not configured"})
 		return
 	}
-	doc, err := s.loadDocument(c.Request.Context(), id)
+	doc, err := s.loadDocument(c.Request.Context(), id, guestIDFrom(c))
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -256,8 +273,8 @@ func (s *server) getDocument(c *gin.Context) {
 	c.JSON(http.StatusOK, doc)
 }
 
-func (s *server) loadDocument(ctx context.Context, id string) (documentJSON, error) {
-	docs, err := s.loadDocuments(ctx, id)
+func (s *server) loadDocument(ctx context.Context, id, guest string) (documentJSON, error) {
+	docs, err := s.loadDocuments(ctx, id, guest)
 	if err != nil {
 		return documentJSON{}, err
 	}
@@ -267,17 +284,18 @@ func (s *server) loadDocument(ctx context.Context, id string) (documentJSON, err
 	return docs[0], nil
 }
 
-func (s *server) loadDocuments(ctx context.Context, id string) ([]documentJSON, error) {
+func (s *server) loadDocuments(ctx context.Context, id, guest string) ([]documentJSON, error) {
 	q := `
 		SELECT d.id::text, d.filename, d.content_type, d.byte_size, d.status,
 		       d.error_message, d.page_count, d.created_at, d.updated_at,
 		       COUNT(c.id)::int, d.source_kind, d.sheet_name, d.sheets_json
 		FROM documents d
 		LEFT JOIN chunks c ON c.document_id = d.id
+		WHERE d.guest_id = $1
 	`
-	args := []any{}
+	args := []any{guest}
 	if id != "" {
-		q += ` WHERE d.id = $1`
+		q += ` AND d.id = $2`
 		args = append(args, id)
 	}
 	q += ` GROUP BY d.id ORDER BY d.created_at DESC`

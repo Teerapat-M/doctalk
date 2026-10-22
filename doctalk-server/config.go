@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -33,8 +34,17 @@ const (
 	citationSnippetRunes     = 240
 	defaultQuizN             = 5
 	defaultQuizNMax          = 20
-	defaultVitePort          = "4317"
+	defaultVitePort          = "3917"
 	defaultCORSOrigin        = "http://localhost:" + defaultVitePort + ",http://127.0.0.1:" + defaultVitePort
+	defaultQuizPerDay        = 5
+	defaultAskPerMinute      = 20
+	defaultIngestPerMinute   = 10
+	defaultQuizIPPerDay      = 20
+	defaultQuizResetHour     = 7
+	defaultGuestTTL          = 7 * 24 * time.Hour
+	defaultMaxPages          = 50
+	defaultMaxRows           = 2000
+	minJWTSecretBytes        = 32
 )
 
 type config struct {
@@ -55,8 +65,19 @@ type config struct {
 	AskTopKMax              int
 	AskTimeout              time.Duration
 	MaxUploadBytes          int64
+	MaxPages                int
+	MaxRows                 int
 	StorageDir              string
 	TrustedProxies          []string
+	JWTSecret               string
+	QuizPerDay              int
+	AskPerMinute            int
+	IngestPerMinute         int
+	QuizIPPerDay            int
+	QuizResetHour           int
+	GuestTTL                time.Duration
+	CookieSecure            bool
+	CookieSameSite          http.SameSite
 }
 
 func loadConfig() (config, error) {
@@ -78,11 +99,25 @@ func loadConfig() (config, error) {
 		AskTopKMax:              getenvInt("ASK_TOP_K_MAX", defaultAskTopKMax),
 		AskTimeout:              time.Duration(getenvInt("ASK_TIMEOUT_SECONDS", defaultAskTimeoutSec)) * time.Second,
 		MaxUploadBytes:          getenvInt64("MAX_UPLOAD_BYTES", defaultMaxUpload),
+		MaxPages:                getenvInt("MAX_PAGES", defaultMaxPages),
+		MaxRows:                 getenvInt("MAX_ROWS", defaultMaxRows),
 		StorageDir:              getenv("STORAGE_DIR", defaultStorageDir),
 		TrustedProxies:          splitCSV(os.Getenv("TRUSTED_PROXIES")),
+		JWTSecret:               os.Getenv("JWT_SECRET"),
+		QuizPerDay:              getenvInt("QUIZ_PER_DAY", defaultQuizPerDay),
+		AskPerMinute:            getenvInt("ASK_PER_MINUTE", defaultAskPerMinute),
+		IngestPerMinute:         getenvInt("INGEST_PER_MINUTE", defaultIngestPerMinute),
+		QuizIPPerDay:            getenvInt("QUIZ_IP_PER_DAY", defaultQuizIPPerDay),
+		QuizResetHour:           getenvInt("QUIZ_RESET_HOUR", defaultQuizResetHour),
+		GuestTTL:                time.Duration(getenvInt("GUEST_TTL_HOURS", int(defaultGuestTTL/time.Hour))) * time.Hour,
+		CookieSecure:            getenvBool("COOKIE_SECURE", false),
+		CookieSameSite:          parseCookieSameSite(os.Getenv("COOKIE_SAMESITE")),
 	}
 	if cfg.DatabaseURL == "" {
 		return config{}, fmt.Errorf("DATABASE_URL is required")
+	}
+	if len(cfg.JWTSecret) < minJWTSecretBytes {
+		return config{}, fmt.Errorf("JWT_SECRET must be at least %d bytes", minJWTSecretBytes)
 	}
 	if cfg.GeminiEmbedBatch < 1 {
 		cfg.GeminiEmbedBatch = defaultEmbedBatch
@@ -119,6 +154,33 @@ func loadConfig() (config, error) {
 	}
 	if cfg.GeminiMaxInFlight < 1 {
 		cfg.GeminiMaxInFlight = defaultGeminiMaxInFlight
+	}
+	if cfg.MaxPages < 1 {
+		cfg.MaxPages = defaultMaxPages
+	}
+	if cfg.MaxRows < 1 {
+		cfg.MaxRows = defaultMaxRows
+	}
+	if cfg.QuizPerDay < 1 {
+		cfg.QuizPerDay = defaultQuizPerDay
+	}
+	if cfg.AskPerMinute < 1 {
+		cfg.AskPerMinute = defaultAskPerMinute
+	}
+	if cfg.IngestPerMinute < 1 {
+		cfg.IngestPerMinute = defaultIngestPerMinute
+	}
+	if cfg.QuizIPPerDay < 1 {
+		cfg.QuizIPPerDay = defaultQuizIPPerDay
+	}
+	if cfg.CookieSameSite == http.SameSiteNoneMode {
+		cfg.CookieSecure = true
+	}
+	if cfg.QuizResetHour < 0 || cfg.QuizResetHour > 23 {
+		cfg.QuizResetHour = defaultQuizResetHour
+	}
+	if cfg.GuestTTL < time.Hour {
+		cfg.GuestTTL = defaultGuestTTL
 	}
 	if cfg.GeminiRetryBudget < time.Second {
 		cfg.GeminiRetryBudget = defaultGeminiRetryBudget
@@ -160,6 +222,29 @@ func getenvInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func getenvBool(key string, fallback bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func parseCookieSameSite(v string) http.SameSite {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "none":
+		return http.SameSiteNoneMode
+	case "strict":
+		return http.SameSiteStrictMode
+	default:
+		return http.SameSiteLaxMode
+	}
 }
 
 func getenvInt64(key string, fallback int64) int64 {

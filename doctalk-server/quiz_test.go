@@ -409,7 +409,7 @@ func TestSpreadsheetUploadIngestAndAskCitation(t *testing.T) {
 		t.Fatal("ingest timed out")
 	}
 
-	got, err := s.loadDocument(context.Background(), created.ID)
+	got, err := s.loadDocument(context.Background(), created.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}

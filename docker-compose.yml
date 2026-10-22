@@ -24,7 +24,18 @@ services:
       PORT: "8181"
       API_PORT: "8181"
       DATABASE_URL: postgres://doctalk:doctalk@db:5432/doctalk?sslmode=disable
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:4317,http://127.0.0.1:4317}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3917,http://127.0.0.1:3917}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required (openssl rand -base64 32)}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-Lax}
+      GUEST_TTL_HOURS: ${GUEST_TTL_HOURS:-168}
+      QUIZ_PER_DAY: ${QUIZ_PER_DAY:-5}
+      QUIZ_RESET_HOUR: ${QUIZ_RESET_HOUR:-7}
+      QUIZ_IP_PER_DAY: ${QUIZ_IP_PER_DAY:-20}
+      ASK_PER_MINUTE: ${ASK_PER_MINUTE:-20}
+      INGEST_PER_MINUTE: ${INGEST_PER_MINUTE:-10}
+      MAX_PAGES: ${MAX_PAGES:-50}
+      MAX_ROWS: ${MAX_ROWS:-2000}
       GIN_MODE: release
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_BASE_URL: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com}

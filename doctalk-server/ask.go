@@ -102,7 +102,7 @@ func (s *server) ask(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
 	defer cancel()
 
-	if err := s.ensureAskDocs(ctx, docIDs); err != nil {
+	if err := s.ensureAskDocs(ctx, docIDs, guestIDFrom(c)); err != nil {
 		if errors.Is(err, errAskDocsBadID) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid document_id"})
 			return
@@ -125,6 +125,17 @@ func (s *server) ask(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load documents"})
 		return
 	}
+
+	res, rejected := s.reserveQuota(c, rateAsk)
+	if rejected {
+		return
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			res.release()
+		}
+	}()
 
 	s.startSSE(c)
 
@@ -176,6 +187,7 @@ func (s *server) ask(c *gin.Context) {
 		citations = []citationJSON{}
 	}
 	_ = writeSSE(c.Writer, "final", finalEvent{Citations: citations})
+	keep = true
 }
 
 func (s *server) startSSE(c *gin.Context) {
@@ -232,12 +244,12 @@ var (
 	errAskDocsBadID    = errors.New("ask docs bad id")
 )
 
-func (s *server) ensureAskDocs(ctx context.Context, ids []string) error {
+func (s *server) ensureAskDocs(ctx context.Context, ids []string, guest string) error {
 	q := `
 		SELECT id::text, status FROM documents
-		WHERE id = ANY($1::uuid[])
+		WHERE id = ANY($1::uuid[]) AND guest_id = $2
 	`
-	rows, err := s.db.QueryContext(ctx, q, "{"+strings.Join(ids, ",")+"}")
+	rows, err := s.db.QueryContext(ctx, q, "{"+strings.Join(ids, ",")+"}", guest)
 	if err != nil {
 		if isBadUUID(err) {
 			return errAskDocsBadID

@@ -41,7 +41,7 @@ func TestHealthOKWhenDBPings(t *testing.T) {
 
 func TestCORSAllowsLocalhostAndLoopback(t *testing.T) {
 	r := newRouter(&server{ping: fakePinger{}, cfg: config{CORSOrigin: defaultCORSOrigin}})
-	for _, origin := range []string{"http://localhost:4317", "http://127.0.0.1:4317"} {
+	for _, origin := range []string{"http://localhost:3917", "http://127.0.0.1:3917"} {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodOptions, "/health", nil)
 		req.Header.Set("Origin", origin)
@@ -52,6 +52,9 @@ func TestCORSAllowsLocalhostAndLoopback(t *testing.T) {
 		if got := w.Header().Get("Access-Control-Allow-Origin"); got != origin {
 			t.Fatalf("origin=%s allow=%q", origin, got)
 		}
+		if got := w.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+			t.Fatalf("origin=%s credentials=%q", origin, got)
+		}
 	}
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodOptions, "/health", nil)
@@ -59,6 +62,15 @@ func TestCORSAllowsLocalhostAndLoopback(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
 		t.Fatalf("unexpected allow=%q", got)
+	}
+
+	wild := newRouter(&server{ping: fakePinger{}, cfg: config{CORSOrigin: "*"}})
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodOptions, "/health", nil)
+	req.Header.Set("Origin", "http://localhost:3917")
+	wild.ServeHTTP(w, req)
+	if got := w.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Fatalf("wildcard must not set credentials, got %q", got)
 	}
 }
 
