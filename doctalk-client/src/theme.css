@@ -1,32 +1,50 @@
-/* Design tokens for DocTalk.
-   Placeholder values until the Penpot "Doctalk" kit is applied.
-   Swap these variables only — components consume tokens, not raw colors. */
-:root {
-  /* Color */
-  --dt-color-bg: #f6f4ef;
-  --dt-color-surface: #ffffff;
-  --dt-color-surface-muted: #efece6;
-  --dt-color-text: #1b1b1b;
-  --dt-color-text-muted: #5c574e;
-  --dt-color-border: #e2ddd4;
-  --dt-color-accent: #2f6f4e;
-  --dt-color-accent-text: #ffffff;
-  --dt-color-accent-soft: #e4f0e8;
-  --dt-color-correct: #2f6f4e;
-  --dt-color-danger: #9b2c2c;
-  --dt-color-focus: #2f6f4e;
+/* Design tokens from Penpot file "Doctalk" (Core / Light / Dark).
+   Components consume --dt-* variables only. */
 
-  /* Typography */
-  --dt-font-sans: "Segoe UI", system-ui, sans-serif;
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+
+  --dt-color-bg: #f7f7f5;
+  --dt-color-bg-accent: #f0f1f3;
+  --dt-color-surface: #ffffff;
+  --dt-color-surface-muted: #f0f1f3;
+  --dt-color-text: #14161a;
+  --dt-color-text-muted: #5b616e;
+  --dt-color-text-faint: #8a909c;
+  --dt-color-border: #e3e5e8;
+  --dt-color-border-strong: #c9cdd3;
+  --dt-color-accent: #4f46e5;
+  --dt-color-accent-hover: #4338ca;
+  --dt-color-accent-text: #ffffff;
+  --dt-color-accent-soft: #eef0ff;
+  --dt-color-correct: #16a34a;
+  --dt-color-danger: #dc2626;
+  --dt-color-danger-soft: #fee2e2;
+  --dt-color-warning: #b45309;
+  --dt-color-warning-soft: #fef3c7;
+  --dt-color-info: #0369a1;
+  --dt-color-info-soft: #e0f2fe;
+  --dt-color-focus: #4f46e5;
+  --dt-color-user-bubble: #4f46e5;
+  --dt-color-user-text: #ffffff;
+  --dt-color-snippet: #fff1b8;
+  --dt-shadow: 0 8px 24px rgba(20, 22, 26, 0.06);
+
+  --dt-font-sans: "IBM Plex Sans Thai", "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --dt-font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --dt-font-size-display: 2.5rem;
   --dt-font-size-title: 1.75rem;
-  --dt-font-size-heading: 1.1rem;
-  --dt-font-size-body: 1rem;
-  --dt-font-size-small: 0.875rem;
+  --dt-font-size-heading: 1.25rem;
+  --dt-font-size-body: 0.9375rem;
+  --dt-font-size-small: 0.8125rem;
+  --dt-font-size-caption: 0.75rem;
   --dt-font-weight-regular: 400;
+  --dt-font-weight-medium: 500;
   --dt-font-weight-semibold: 600;
+  --dt-font-weight-bold: 700;
   --dt-line-height: 1.5;
 
-  /* Spacing */
   --dt-space-1: 0.25rem;
   --dt-space-2: 0.5rem;
   --dt-space-3: 0.75rem;
@@ -35,11 +53,318 @@
   --dt-space-6: 1.5rem;
   --dt-space-8: 2.5rem;
 
-  /* Radius */
-  --dt-radius-sm: 4px;
-  --dt-radius-md: 8px;
-  --dt-radius-lg: 12px;
+  --dt-radius-sm: 6px;
+  --dt-radius-md: 10px;
+  --dt-radius-lg: 14px;
+  --dt-radius-xl: 20px;
+  --dt-radius-full: 999px;
 
-  /* Layout */
   --dt-max-width: 44rem;
+  --dt-sidebar-width: 16.5rem;
+  --dt-header-height: 3.5rem;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --dt-color-bg: #0f1115;
+  --dt-color-bg-accent: #1f232c;
+  --dt-color-surface: #171a21;
+  --dt-color-surface-muted: #1f232c;
+  --dt-color-text: #eceef2;
+  --dt-color-text-muted: #a3a9b6;
+  --dt-color-text-faint: #6e7584;
+  --dt-color-border: #2a2f3a;
+  --dt-color-border-strong: #3a404d;
+  --dt-color-accent: #8b85ff;
+  --dt-color-accent-hover: #a5a0ff;
+  --dt-color-accent-text: #0f1115;
+  --dt-color-accent-soft: #23224a;
+  --dt-color-correct: #4ade80;
+  --dt-color-danger: #f87171;
+  --dt-color-danger-soft: #3b1717;
+  --dt-color-warning: #fbbf24;
+  --dt-color-warning-soft: #3a2e0f;
+  --dt-color-info: #7dd3fc;
+  --dt-color-info-soft: #0f2a3a;
+  --dt-color-focus: #8b85ff;
+  --dt-color-user-bubble: #8b85ff;
+  --dt-color-user-text: #0f1115;
+  --dt-color-snippet: #5a4a12;
+  --dt-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+/* 1. Button */
+.dt-btn {
+  font: inherit;
+  font-weight: var(--dt-font-weight-semibold);
+  color: var(--dt-color-accent-text);
+  background: var(--dt-color-accent);
+  border: 0;
+  border-radius: var(--dt-radius-sm);
+  padding: var(--dt-space-2) var(--dt-space-4);
+  cursor: pointer;
+}
+.dt-btn:hover:not(:disabled) {
+  background: var(--dt-color-accent-hover);
+}
+.dt-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.dt-btn-secondary {
+  color: var(--dt-color-text);
+  background: var(--dt-color-surface-muted);
+}
+.dt-btn-secondary:hover:not(:disabled) {
+  background: var(--dt-color-border);
+}
+.dt-btn-ghost {
+  color: var(--dt-color-text);
+  background: transparent;
+  border: 1px solid var(--dt-color-border);
+}
+.dt-btn-ghost:hover:not(:disabled) {
+  background: var(--dt-color-surface-muted);
+}
+
+/* 2. Icon button */
+.dt-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border: 1px solid var(--dt-color-border);
+  border-radius: var(--dt-radius-md);
+  background: var(--dt-color-surface);
+  color: var(--dt-color-text);
+  cursor: pointer;
+}
+.dt-icon-btn:focus-visible,
+.dt-btn:focus-visible,
+.dt-input:focus-visible,
+.dt-toggle-track:focus-visible {
+  outline: 2px solid var(--dt-color-focus);
+  outline-offset: 2px;
+}
+
+/* 3. Field / input */
+.dt-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dt-space-1);
+  font-size: var(--dt-font-size-small);
+  color: var(--dt-color-text-muted);
+}
+.dt-input {
+  font: inherit;
+  color: var(--dt-color-text);
+  background: var(--dt-color-surface);
+  border: 1px solid var(--dt-color-border);
+  border-radius: var(--dt-radius-sm);
+  padding: var(--dt-space-2) var(--dt-space-3);
+}
+
+/* 4. Chip (citation) */
+.dt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dt-space-2);
+  max-width: 100%;
+  padding: var(--dt-space-1) var(--dt-space-3);
+  border-radius: var(--dt-radius-full);
+  border: 1px solid var(--dt-color-border);
+  background: var(--dt-color-surface-muted);
+  font-size: var(--dt-font-size-small);
+  color: var(--dt-color-text);
+}
+.dt-chip-accent {
+  background: var(--dt-color-accent-soft);
+  border-color: transparent;
+  color: var(--dt-color-accent);
+}
+.dt-chip-danger {
+  background: var(--dt-color-danger-soft);
+  border-color: transparent;
+  color: var(--dt-color-danger);
+}
+.dt-chip-snippet {
+  color: var(--dt-color-text);
+  background: var(--dt-color-snippet);
+  border-radius: var(--dt-radius-sm);
+  padding: 0 var(--dt-space-1);
+  max-width: 18rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 5. Card / doc list item */
+.dt-card {
+  background: var(--dt-color-surface);
+  border: 1px solid var(--dt-color-border);
+  border-radius: var(--dt-radius-md);
+  padding: var(--dt-space-4) var(--dt-space-5);
+  box-shadow: var(--dt-shadow);
+}
+
+/* 6. Dropzone */
+.dt-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--dt-space-2);
+  min-height: 10rem;
+  padding: var(--dt-space-6);
+  border: 1.5px dashed var(--dt-color-border-strong);
+  border-radius: var(--dt-radius-lg);
+  background: var(--dt-color-surface);
+  color: var(--dt-color-text-muted);
+  text-align: center;
+  cursor: pointer;
+}
+.dt-dropzone[data-active="true"] {
+  border-color: var(--dt-color-accent);
+  background: var(--dt-color-accent-soft);
+  color: var(--dt-color-text);
+}
+
+/* 7. Message */
+.dt-msg {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dt-space-2);
+  max-width: min(40rem, 100%);
+}
+.dt-msg-user {
+  align-self: flex-end;
+}
+.dt-msg-assistant {
+  align-self: flex-start;
+}
+.dt-msg-bubble {
+  padding: var(--dt-space-3) var(--dt-space-4);
+  border-radius: var(--dt-radius-lg);
+  white-space: pre-wrap;
+  line-height: var(--dt-line-height);
+}
+.dt-msg-user .dt-msg-bubble {
+  background: var(--dt-color-user-bubble);
+  color: var(--dt-color-user-text);
+  border-bottom-right-radius: var(--dt-radius-sm);
+}
+.dt-msg-assistant .dt-msg-bubble {
+  background: var(--dt-color-surface);
+  border: 1px solid var(--dt-color-border);
+  border-bottom-left-radius: var(--dt-radius-sm);
+}
+.dt-msg-citations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dt-space-2);
+}
+
+/* 8. Empty / error */
+.dt-empty,
+.dt-error-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dt-space-3);
+  padding: var(--dt-space-6);
+  border-radius: var(--dt-radius-lg);
+  text-align: center;
+}
+.dt-empty {
+  background: var(--dt-color-surface-muted);
+  color: var(--dt-color-text-muted);
+}
+.dt-error-panel {
+  background: var(--dt-color-danger-soft);
+  color: var(--dt-color-danger);
+  border: 1px solid var(--dt-color-danger);
+}
+
+/* 9. Header */
+.dt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dt-space-3);
+  min-height: var(--dt-header-height);
+  padding: 0 var(--dt-space-5);
+  border-bottom: 1px solid var(--dt-color-border);
+  background: var(--dt-color-surface);
+}
+.dt-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--dt-space-2);
+  color: inherit;
+  text-decoration: none;
+  font-weight: var(--dt-font-weight-semibold);
+}
+.dt-brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: var(--dt-radius-sm);
+  background: var(--dt-color-accent);
+  color: var(--dt-color-accent-text);
+  font-size: var(--dt-font-size-caption);
+  font-weight: var(--dt-font-weight-bold);
+}
+.dt-nav {
+  display: flex;
+  gap: var(--dt-space-4);
+  font-size: var(--dt-font-size-small);
+}
+.dt-nav a {
+  color: var(--dt-color-text-muted);
+  text-decoration: none;
+}
+.dt-nav a[data-active="true"],
+.dt-nav a:hover {
+  color: var(--dt-color-text);
+}
+
+/* 10. Toggle */
+.dt-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--dt-space-2);
+  font-size: var(--dt-font-size-small);
+  color: var(--dt-color-text);
+  cursor: pointer;
+}
+.dt-toggle-track {
+  width: 2.25rem;
+  height: 1.25rem;
+  border: 0;
+  border-radius: var(--dt-radius-full);
+  background: var(--dt-color-border-strong);
+  position: relative;
+  cursor: pointer;
+  padding: 0;
+}
+.dt-toggle-track[data-on="true"] {
+  background: var(--dt-color-accent);
+}
+.dt-toggle-track::after {
+  content: "";
+  position: absolute;
+  top: 0.125rem;
+  left: 0.125rem;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: var(--dt-color-surface);
+  transition: transform 0.12s ease-out;
+}
+.dt-toggle-track[data-on="true"]::after {
+  transform: translateX(1rem);
 }

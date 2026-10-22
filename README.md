@@ -144,7 +144,25 @@ Content-Type: application/json
 
 Chat model: `GEMINI_CHAT_MODEL` (default `gemini-3.8-flash`). Quiz model: `GEMINI_QUIZ_MODEL` (defaults to the chat model). Tests mock Gemini via `GEMINI_BASE_URL` / fakes; CI does not need `GEMINI_API_KEY`.
 
-The client quiz UI picks a source and question count, shows A–D, has a global and per-question answer-key toggle, and a regenerate button. Colors, type, spacing, and radius live in `doctalk-client/src/theme.css` as CSS variables (Penpot Doctalk placeholders — swap later). Ready sources show `page_count` for PDFs and `row_count` for spreadsheets.
+## Phase 4 — chat UI
+
+The Vite app (`doctalk-client`, port **4317**, `strictPort`) is the chat and quiz UI. Tokens live in `src/theme.css` from the Penpot **Doctalk** file (Core / Light / Dark, desktop 1440 and mobile 390). Frames **01–04** were empty in Penpot, so landing/workspace/error are assembled from those tokens. Frames **05a–c** (Excel upload / sheet & columns / importing), **06** (quiz setup), **07a–b** (taking / show answers), and **08a–d** (generating / empty / error / quota) drive the Excel and quiz UI, including Option Row, Toggle, Stepper, Column Mapper (Question / Answer / Explanation / Ignore), Skeleton, and Progress.
+
+`VITE_API_URL` is optional; leave it unset so the browser talks to Vite and the proxy forwards `/health`, `/documents`, `/ask`, and `/quiz`. Guest quiz quota (5/day, reset 07:00 Asia/Bangkok) is stored in `localStorage` until Phase 5 auth.
+
+Hash routes:
+
+| Hash | Screen |
+| --- | --- |
+| `#/` | Landing + upload (PDF and xlsx/csv). xlsx stays on a sheet/column picker until `POST /documents/:id/ingest`. |
+| `#/workspace/:id` | Workspace chat. `POST /ask` is read as SSE (`delta` text, then `final` citations, or `error`). Citations render as page or sheet/row chips with snippets. |
+| `#/workspace/:id/quiz` or `#/quiz` | Quiz: pick source and `n`, A–D options, show-all or per-question answer toggles, explanation + source chip. |
+| `#/not-found` | Missing document or unknown route. |
+| `#/error` | Error state (including a redacted SSE `error` payload shown in the chat thread). |
+
+Light/dark follows `prefers-color-scheme` and a header toggle (`localStorage` key `dt-theme`). Below 720px the document list is a drawer. Vitest covers the SSE parser (`ask.test.ts`), quiz toggles and Option Row states (`quizToggles.test.ts`), column picker roles (`columnPicker.test.ts`), and the guest quota helper (`quizQuota.test.ts`); `npm test` runs in CI.
+
+The client quiz UI picks a source and question count, shows A–D, has a global and per-question answer-key toggle, and a regenerate button. Colors, type, spacing, and radius live in `doctalk-client/src/theme.css` as CSS variables from the Penpot **Doctalk** file (Core / Light / Dark). Ready sources show `page_count` for PDFs and `row_count` for spreadsheets.
 
 ### Thai-aware chunking
 
@@ -226,7 +244,7 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    npm run dev
    ```
 
-   Vite listens on `VITE_PORT` (4317) at `127.0.0.1` and proxies `/health`, `/documents`, `/ask`, and `/quiz` to the API. Leave `VITE_API_URL` unset so the browser talks to Vite (same origin) instead of calling `localhost` while Vite prints `http://127.0.0.1:4317`. `CORS_ORIGIN` still allows both hostnames if the client is pointed at the API directly.
+   Vite listens on `VITE_PORT` (4317) at `127.0.0.1` and proxies `/health`, `/documents`, `/ask`, and `/quiz` to the API. Leave `VITE_API_URL` unset so the browser talks to Vite (same origin) instead of calling `localhost` while Vite prints `http://127.0.0.1:4317`. `CORS_ORIGIN` still allows both hostnames if the client is pointed at the API directly. Open http://127.0.0.1:4317 — landing, upload, workspace chat, and quiz are hash-routed (`#/`, `#/workspace/:id`, `#/quiz`).
 
 Use the Gemini **free tier**. Do not put the key in git or CI.
 
@@ -332,7 +350,7 @@ CI runs both, with a `pgvector/pgvector:pg16` service for the server job. Gemini
 - **Phase 1:** health, migrations, local Postgres, CI. (done)
 - **Phase 2:** PDF upload, text extraction, Thai-aware chunking, embedding.
 - **Phase 3:** ask endpoint with top-k retrieval, Gemini answers with citations, SSE streaming.
-- **Phase 3.5:** Excel/CSV ingest, quiz generation, quiz UI. (done; this PR is QA)
-- **Phase 4:** chat UI.
+- **Phase 3.5:** Excel/CSV ingest, quiz generation, quiz UI. (done)
+- **Phase 4:** chat UI. (this PR)
 - **Phase 5:** guest auth and rate limiting.
 - **Phase 6:** deploy (Render server, Vercel client, Supabase Postgres, all free tiers).

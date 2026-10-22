@@ -66,10 +66,23 @@ export async function ingestDocument(
 
 export async function fetchDocument(baseUrl: string, id: string): Promise<DocumentRecord> {
   const res = await fetch(documentsUrl(baseUrl, id));
+  if (res.status === 404) {
+    throw new Error("not found");
+  }
   if (!res.ok) {
-    throw new Error(`document failed: ${res.status}`);
+    throw new Error(await readError(res, `document failed: ${res.status}`));
   }
   return (await res.json()) as DocumentRecord;
+}
+
+export function documentCountLabel(d: DocumentRecord): string {
+  if (d.row_count != null) {
+    return `${d.status}, ${d.row_count} rows`;
+  }
+  if (d.page_count != null) {
+    return `${d.status}, ${d.page_count} pages`;
+  }
+  return d.status;
 }
 
 async function readError(res: Response, fallback: string): Promise<string> {
