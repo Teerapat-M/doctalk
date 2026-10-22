@@ -1,129 +1,65 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  fetchDocument,
-  fetchDocuments,
-  ingestDocument,
-  uploadDocument,
-  type ColumnMap,
-  type DocumentRecord,
-} from "./documents";
-import { formatCitation, generateQuiz, type QuizMode, type QuizQuestion } from "./quiz";
+  AlertBanner,
+  Button,
+  CitationChip,
+  EmptyState,
+  Field,
+  OptionRow,
+  Select,
+  Skeleton,
+  Stepper,
+  Toggle,
+} from "./components";
+import { documentCountLabel, type DocumentRecord } from "./documents";
+import { generateQuiz, type QuizMode, type QuizQuestion } from "./quiz";
+import { QUIZ_DAILY_LIMIT, consumeQuota, readQuota } from "./quizQuota";
+import {
+  answerVisible,
+  clampN,
+  optionState,
+  toggleAllAnswers,
+  toggleOneAnswer,
+  type PicksMap,
+  type ShownMap,
+} from "./quizToggles";
 
-const apiBase = import.meta.env.VITE_API_URL ?? "";
 const optionLetters = ["A", "B", "C", "D"] as const;
+const quotaStore = () => window.localStorage;
 
 type Props = {
   baseUrl?: string;
+  docs?: DocumentRecord[];
+  sourceId?: string;
 };
 
-export default function QuizPanel({ baseUrl = apiBase }: Props) {
-  const [docs, setDocs] = useState<DocumentRecord[]>([]);
-  const [sourceId, setSourceId] = useState("");
+export default function QuizPanel({
+  baseUrl = import.meta.env.VITE_API_URL ?? "",
+  docs = [],
+  sourceId: sourceIdProp,
+}: Props) {
+  const [sourceId, setSourceId] = useState(sourceIdProp ?? "");
+  useEffect(() => {
+    if (sourceIdProp) setSourceId(sourceIdProp);
+  }, [sourceIdProp]);
   const [n, setN] = useState(5);
   const [mode, setMode] = useState<QuizMode>("generate");
   const [questions, setQuestions] = useState<QuizQuestion[]>([]);
   const [showAllAnswers, setShowAllAnswers] = useState(false);
-  const [shown, setShown] = useState<Record<number, boolean>>({});
+  const [shown, setShown] = useState<ShownMap>({});
+  const [picks, setPicks] = useState<PicksMap>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sheet, setSheet] = useState("");
-  const [questionCol, setQuestionCol] = useState("");
-  const [answerCol, setAnswerCol] = useState("");
-  const [explanationCol, setExplanationCol] = useState("");
-  const [contentCol, setContentCol] = useState("");
-  const [mapMode, setMapMode] = useState<"question" | "content">("question");
+  const [quota, setQuota] = useState(() =>
+    typeof window === "undefined" ? { used: 0, remaining: QUIZ_DAILY_LIMIT, day: "" } : readQuota(quotaStore()),
+  );
 
   const selected = useMemo(() => docs.find((d) => d.id === sourceId), [docs, sourceId]);
   const readyDocs = docs.filter((d) => d.status === "done");
-  const mappingDocs = docs.filter((d) => d.status === "mapping");
-
-  async function refresh() {
-    const list = await fetchDocuments(baseUrl);
-    setDocs(list);
-    return list;
-  }
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchDocuments(baseUrl)
-      .then((list) => {
-        if (!cancelled) setDocs(list);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "could not list documents");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [baseUrl]);
-
-  useEffect(() => {
-    if (!selected?.sheets?.length) return;
-    const first = selected.sheets[0];
-    setSheet(first.name);
-    const headers = first.headers;
-    setQuestionCol(pickHeader(headers, ["question", "คำถาม"]));
-    setAnswerCol(pickHeader(headers, ["answer", "คำตอบ"]));
-    setExplanationCol(pickHeader(headers, ["explanation", "คำอธิบาย"]));
-    setContentCol(pickHeader(headers, ["content", "เนื้อหา"]));
-  }, [selected?.id, selected?.sheets]);
-
-  const sheetHeaders = selected?.sheets?.find((s) => s.name === sheet)?.headers ?? [];
-
-  async function onUpload(file: File) {
-    setError(null);
-    setBusy(true);
-    try {
-      const doc = await uploadDocument(baseUrl, file);
-      const list = await refresh();
-      setSourceId(doc.id);
-      if (doc.status !== "mapping") {
-        await pollUntilSettled(doc.id, list);
-      }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "upload failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function pollUntilSettled(id: string, list?: DocumentRecord[]) {
-    let current = list ?? docs;
-    for (let i = 0; i < 30; i++) {
-      const doc = current.find((d) => d.id === id) ?? (await fetchDocument(baseUrl, id));
-      if (doc.status === "done" || doc.status === "failed" || doc.status === "mapping") {
-        await refresh();
-        return;
-      }
-      await new Promise((r) => setTimeout(r, 1000));
-      current = await refresh();
-    }
-  }
-
-  async function onIngest() {
-    if (!sourceId || !sheet) return;
-    const columns: ColumnMap = {};
-    if (mapMode === "question") {
-      columns.question = questionCol;
-      if (answerCol) columns.answer = answerCol;
-      if (explanationCol) columns.explanation = explanationCol;
-    } else {
-      columns.content = contentCol;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await ingestDocument(baseUrl, sourceId, sheet, columns);
-      await pollUntilSettled(sourceId);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "ingest failed");
-    } finally {
-      setBusy(false);
-    }
-  }
+  const quotaReached = quota.remaining <= 0;
 
   async function onGenerate() {
-    if (!sourceId) return;
+    if (!sourceId || quotaReached) return;
     setBusy(true);
     setError(null);
     try {
@@ -134,6 +70,8 @@ export default function QuizPanel({ baseUrl = apiBase }: Props) {
       });
       setQuestions(result.questions);
       setShown({});
+      setPicks({});
+      setQuota(consumeQuota(quotaStore()));
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "quiz failed");
     } finally {
@@ -141,211 +79,151 @@ export default function QuizPanel({ baseUrl = apiBase }: Props) {
     }
   }
 
-  function answerVisible(index: number): boolean {
-    if (Object.prototype.hasOwnProperty.call(shown, index)) {
-      return shown[index];
-    }
-    return showAllAnswers;
-  }
+  const answered = Object.keys(picks).length;
+  const scored = questions.filter((q, i) => answerVisible(i, shown, showAllAnswers) && picks[i] === q.correct).length;
+  const revealedCount = questions.filter((_, i) => answerVisible(i, shown, showAllAnswers)).length;
 
   return (
-    <section>
-      <h2>Quiz</h2>
-      <p className="lede">Pick a source and generate A–D questions. Answer keys stay hidden until you toggle them.</p>
+    <section className="quiz-panel">
+      <h2>สร้างแบบทดสอบ</h2>
+      <p className="lede">Generate a multiple-choice quiz from your documents.</p>
 
-      <div className="row" style={{ marginTop: "var(--dt-space-4)" }}>
-        <label>
-          Source
-          <select value={sourceId} onChange={(e) => setSourceId(e.target.value)}>
-            <option value="">Select a document</option>
-            {docs.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.filename} ({documentCountLabel(d)})
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Questions
-          <input
-            type="number"
-            min={1}
-            max={20}
-            value={n}
-            onChange={(e) => setN(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
-          />
-        </label>
-        {selected && selected.source_kind !== "pdf" ? (
-          <label>
-            Mode
-            <select value={mode} onChange={(e) => setMode(e.target.value as QuizMode)}>
-              <option value="generate">Generate with Gemini</option>
-              <option value="from_columns">From question/answer columns</option>
-            </select>
-          </label>
-        ) : null}
-        <label>
-          Upload PDF, XLSX, or CSV
-          <input
-            type="file"
-            accept=".pdf,.xlsx,.csv,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void onUpload(file);
-              e.target.value = "";
-            }}
-          />
-        </label>
+      <div className="source-grid">
+        {readyDocs.map((d) => (
+          <button
+            key={d.id}
+            type="button"
+            className="source-card"
+            data-active={d.id === sourceId ? "true" : "false"}
+            onClick={() => setSourceId(d.id)}
+          >
+            <span className="source-kind">{d.source_kind === "pdf" ? "PDF" : "XLS"}</span>
+            <strong>{d.filename}</strong>
+            <span className="doc-item-meta">{documentCountLabel(d)}</span>
+          </button>
+        ))}
       </div>
 
-      {selected?.status === "mapping" ? (
-        <div className="question">
-          <p>Map columns for {selected.filename}.</p>
-          <div className="row">
-            <label>
-              Sheet
-              <select value={sheet} onChange={(e) => setSheet(e.target.value)}>
-                {(selected.sheets ?? []).map((s) => (
-                  <option key={s.name} value={s.name}>
-                    {s.name} ({s.row_count} rows)
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Map
-              <select value={mapMode} onChange={(e) => setMapMode(e.target.value as "question" | "content")}>
-                <option value="question">Question column</option>
-                <option value="content">Content column</option>
-              </select>
-            </label>
-            {mapMode === "question" ? (
-              <>
-                <label>
-                  Question
-                  <select value={questionCol} onChange={(e) => setQuestionCol(e.target.value)}>
-                    {sheetHeaders.map((h) => (
-                      <option key={h} value={h}>
-                        {h}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Answer (optional)
-                  <select value={answerCol} onChange={(e) => setAnswerCol(e.target.value)}>
-                    <option value="">None</option>
-                    {sheetHeaders.map((h) => (
-                      <option key={h} value={h}>
-                        {h}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Explanation (optional)
-                  <select value={explanationCol} onChange={(e) => setExplanationCol(e.target.value)}>
-                    <option value="">None</option>
-                    {sheetHeaders.map((h) => (
-                      <option key={h} value={h}>
-                        {h}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </>
-            ) : (
-              <label>
-                Content
-                <select value={contentCol} onChange={(e) => setContentCol(e.target.value)}>
-                  {sheetHeaders.map((h) => (
-                    <option key={h} value={h}>
-                      {h}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            <button type="button" onClick={() => void onIngest()} disabled={busy}>
-              Ingest sheet
-            </button>
-          </div>
+      <div className="row" style={{ marginTop: "var(--dt-space-4)" }}>
+        {readyDocs.length === 0 ? (
+          <Field label="แหล่งที่มา · Source">
+            <Select value={sourceId} onChange={(e) => setSourceId(e.target.value)}>
+              <option value="">Select a document</option>
+              {docs.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.filename} ({documentCountLabel(d)})
+                </option>
+              ))}
+            </Select>
+          </Field>
+        ) : null}
+        <div className="dt-field">
+          จำนวนคำถาม · Questions
+          <Stepper value={n} onChange={(v) => setN(clampN(v))} />
+        </div>
+        {selected && selected.source_kind !== "pdf" ? (
+          <Field label="Mode">
+            <Select value={mode} onChange={(e) => setMode(e.target.value as QuizMode)}>
+              <option value="generate">Generate with Gemini</option>
+              <option value="from_columns">From question/answer columns</option>
+            </Select>
+          </Field>
+        ) : null}
+        <Button onClick={() => void onGenerate()} disabled={busy || !sourceId || selected?.status !== "done" || quotaReached}>
+          {questions.length ? "↻ สร้างใหม่" : "สร้างแบบทดสอบ · Generate"}
+        </Button>
+        <Toggle
+          label="แสดงเฉลย · Show answers"
+          on={showAllAnswers}
+          onChange={() => {
+            const next = toggleAllAnswers(!showAllAnswers);
+            setShowAllAnswers(next.showAll);
+            setShown(next.shown);
+          }}
+        />
+      </div>
+      <p className="lede">ใช้โควตา 1 ครั้ง · เหลือ {quota.remaining}/{QUIZ_DAILY_LIMIT} ครั้งวันนี้</p>
+
+      {quotaReached ? (
+        <EmptyState title="ใช้โควตาวันนี้ครบแล้ว">
+          <p>Daily quiz limit reached ({QUIZ_DAILY_LIMIT}/{QUIZ_DAILY_LIMIT}). โควตาจะรีเซ็ตตอน 07:00 (เวลาไทย)</p>
+          {questions.length ? <p>แบบทดสอบเดิมยังเปิดดูได้</p> : null}
+        </EmptyState>
+      ) : null}
+
+      {busy ? (
+        <div className="quiz-generating">
+          <h3>กำลังสร้างแบบทดสอบ…</h3>
+          <p className="lede">Generating questions from your documents</p>
+          <Skeleton type="question" />
+          <Skeleton type="question" />
         </div>
       ) : null}
 
-      <div className="row" style={{ marginTop: "var(--dt-space-4)" }}>
-        <button type="button" onClick={() => void onGenerate()} disabled={busy || !sourceId || selected?.status !== "done"}>
-          {questions.length ? "Regenerate" : "Generate quiz"}
-        </button>
-        <label className="toggle">
-          <input
-            type="checkbox"
-            checked={showAllAnswers}
-            onChange={(e) => {
-              setShowAllAnswers(e.target.checked);
-              setShown({});
-            }}
-          />
-          Show answer key
-        </label>
-      </div>
+      {error && !busy ? (
+        <AlertBanner tone="danger">
+          <strong>สร้างแบบทดสอบไม่สำเร็จ</strong>
+          <p>{error}</p>
+          <Button variant="secondary" onClick={() => void onGenerate()}>
+            ↻ ลองใหม่ · Retry
+          </Button>
+        </AlertBanner>
+      ) : null}
 
-      {error ? (
-        <p className="error" role="alert">
-          {error}
+      {!busy && !error && !questions.length && !quotaReached ? (
+        readyDocs.length === 0 ? (
+          <EmptyState title="ยังไม่มีแบบทดสอบ">
+            No quizzes yet. อัปโหลด PDF หรือนำเข้า Excel ก่อน แล้วสร้างแบบทดสอบได้ในคลิกเดียว
+          </EmptyState>
+        ) : (
+          <p className="lede">ยังไม่มีแบบทดสอบ · No quizzes yet.</p>
+        )
+      ) : null}
+
+      {questions.length > 0 && !busy ? (
+        <p className="lede">
+          ตอบแล้ว {answered}/{questions.length}
+          {revealedCount ? ` · คะแนน ${scored}/${revealedCount} · Score` : ""}
         </p>
       ) : null}
-      {!docs.length ? <p>Upload a document to quiz it.</p> : null}
-      {readyDocs.length + mappingDocs.length === 0 && docs.length ? <p>Waiting for a ready source…</p> : null}
 
-      {questions.map((q, index) => {
-        const visible = answerVisible(index);
-        return (
-          <article className="question" key={`${q.prompt}-${index}`}>
-            <h3>
-              {index + 1}. {q.prompt}
-            </h3>
-            <ul className="options">
-              {optionLetters.map((letter) => (
-                <li key={letter} className={visible && q.correct === letter ? "correct" : undefined}>
-                  <strong>{letter}.</strong> {q.options[letter]}
-                </li>
-              ))}
-            </ul>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={visible}
-                onChange={(e) => setShown((prev) => ({ ...prev, [index]: e.target.checked }))}
-              />
-              Show answer
-            </label>
-            {visible ? (
-              <div className="answer-key">
-                <p>
-                  Correct: {q.correct}. {q.explanation}
-                </p>
-                <p className="citation">Citation: {formatCitation(q.citation)}</p>
+      {!busy &&
+        questions.map((q, index) => {
+          const visible = answerVisible(index, shown, showAllAnswers);
+          return (
+            <article className="question" key={`${q.prompt}-${index}`}>
+              <h3>
+                ข้อ {index + 1} / {questions.length}. {q.prompt}
+              </h3>
+              <div className="options">
+                {optionLetters.map((letter) => (
+                  <OptionRow
+                    key={letter}
+                    letter={letter}
+                    text={q.options[letter]}
+                    state={optionState(letter, picks[index], q.correct, visible)}
+                    onClick={visible ? undefined : () => setPicks((prev) => ({ ...prev, [index]: letter }))}
+                  />
+                ))}
               </div>
-            ) : null}
-          </article>
-        );
-      })}
+              <Toggle
+                label="Show answer"
+                on={visible}
+                onChange={() => setShown(toggleOneAnswer(shown, index, !visible))}
+              />
+              {visible ? (
+                <div className="answer-key">
+                  <p>
+                    <strong>คำอธิบาย · Explanation.</strong> {q.explanation}
+                  </p>
+                  <p className="citation">
+                    <CitationChip citation={q.citation} />
+                  </p>
+                </div>
+              ) : null}
+            </article>
+          );
+        })}
     </section>
   );
-}
-
-function pickHeader(headers: string[], names: string[]): string {
-  const lower = names.map((n) => n.toLowerCase());
-  return headers.find((h) => lower.includes(h.toLowerCase())) ?? headers[0] ?? "";
-}
-
-function documentCountLabel(d: DocumentRecord): string {
-  if (d.row_count != null) {
-    return `${d.status}, ${d.row_count} rows`;
-  }
-  if (d.page_count != null) {
-    return `${d.status}, ${d.page_count} pages`;
-  }
-  return d.status;
 }
