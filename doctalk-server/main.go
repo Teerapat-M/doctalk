@@ -23,6 +23,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if msg := ephemeralStorageWarning(cfg); msg != "" {
+		log.Print(msg)
+	}
 
 	ctx := context.Background()
 	db, err := connect(ctx, cfg.DatabaseURL)
@@ -49,7 +52,7 @@ func run() error {
 		ping:    db,
 		db:      db,
 		cfg:     cfg,
-		store:   newDiskStorage(cfg.StorageDir),
+		store:   newStorage(cfg),
 		embed:   embed,
 		chat:    chat,
 		quiz:    quiz,

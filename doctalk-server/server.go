@@ -2,7 +2,10 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -23,7 +26,9 @@ type server struct {
 
 func newRouter(s *server) *gin.Engine {
 	r := gin.New()
-	_ = r.SetTrustedProxies(s.cfg.TrustedProxies)
+	if err := r.SetTrustedProxies(s.cfg.TrustedProxies); err != nil {
+		panic(fmt.Sprintf("TRUSTED_PROXIES: %v", err))
+	}
 	r.Use(gin.Logger(), gin.Recovery(), cors(s.cfg.CORSOrigin), guestMiddleware(s))
 	r.MaxMultipartMemory = 8 << 20
 	r.GET("/health", healthHandler(s.ping))
@@ -68,4 +73,27 @@ func cors(originCSV string) gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+func (s *server) clientIP(c *gin.Context) string {
+	if name := s.cfg.ClientIPHeader; name != "" {
+		if ip := headerClientIP(c.GetHeader(name)); ip != "" {
+			return ip
+		}
+	}
+	return c.ClientIP()
+}
+
+func headerClientIP(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if i := strings.IndexByte(v, ','); i >= 0 {
+		v = strings.TrimSpace(v[:i])
+	}
+	if net.ParseIP(v) == nil {
+		return ""
+	}
+	return v
 }

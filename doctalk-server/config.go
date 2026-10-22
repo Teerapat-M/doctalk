@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -44,6 +45,7 @@ const (
 	defaultGuestTTL          = 7 * 24 * time.Hour
 	defaultMaxPages          = 50
 	defaultMaxRows           = 2000
+	defaultSupabaseBucket    = "doctalk-uploads"
 	minJWTSecretBytes        = 32
 )
 
@@ -69,6 +71,7 @@ type config struct {
 	MaxRows                 int
 	StorageDir              string
 	TrustedProxies          []string
+	ClientIPHeader          string
 	JWTSecret               string
 	QuizPerDay              int
 	AskPerMinute            int
@@ -78,6 +81,9 @@ type config struct {
 	GuestTTL                time.Duration
 	CookieSecure            bool
 	CookieSameSite          http.SameSite
+	SupabaseURL             string
+	SupabaseServiceKey      string
+	SupabaseBucket          string
 }
 
 func loadConfig() (config, error) {
@@ -108,16 +114,57 @@ func loadConfig() (config, error) {
 		AskPerMinute:            getenvInt("ASK_PER_MINUTE", defaultAskPerMinute),
 		IngestPerMinute:         getenvInt("INGEST_PER_MINUTE", defaultIngestPerMinute),
 		QuizIPPerDay:            getenvInt("QUIZ_IP_PER_DAY", defaultQuizIPPerDay),
-		QuizResetHour:           getenvInt("QUIZ_RESET_HOUR", defaultQuizResetHour),
 		GuestTTL:                time.Duration(getenvInt("GUEST_TTL_HOURS", int(defaultGuestTTL/time.Hour))) * time.Hour,
-		CookieSecure:            getenvBool("COOKIE_SECURE", false),
-		CookieSameSite:          parseCookieSameSite(os.Getenv("COOKIE_SAMESITE")),
+		SupabaseURL:             strings.TrimRight(os.Getenv("SUPABASE_URL"), "/"),
+		SupabaseServiceKey:      os.Getenv("SUPABASE_SERVICE_ROLE_KEY"),
+		SupabaseBucket:          getenv("SUPABASE_BUCKET", defaultSupabaseBucket),
+	}
+	sameSite, err := parseCookieSameSite(os.Getenv("COOKIE_SAMESITE"))
+	if err != nil {
+		return config{}, err
+	}
+	cfg.CookieSameSite = sameSite
+	secure, err := parseCookieSecure(os.Getenv("COOKIE_SECURE"))
+	if err != nil {
+		return config{}, err
+	}
+	cfg.CookieSecure = secure
+	resetHour, err := parseQuizResetHour(os.Getenv("QUIZ_RESET_HOUR"))
+	if err != nil {
+		return config{}, err
+	}
+	cfg.QuizResetHour = resetHour
+	header, err := parseClientIPHeader(os.Getenv("CLIENT_IP_HEADER"))
+	if err != nil {
+		return config{}, err
+	}
+	cfg.ClientIPHeader = header
+	if err := validateTrustedProxies(cfg.TrustedProxies); err != nil {
+		return config{}, err
 	}
 	if cfg.DatabaseURL == "" {
 		return config{}, fmt.Errorf("DATABASE_URL is required")
 	}
 	if len(cfg.JWTSecret) < minJWTSecretBytes {
 		return config{}, fmt.Errorf("JWT_SECRET must be at least %d bytes", minJWTSecretBytes)
+	}
+	if corsHasWildcard(cfg.CORSOrigin) {
+		return config{}, fmt.Errorf("CORS_ORIGIN must not be a wildcard when credentials are used")
+	}
+	if cfg.CookieSameSite == http.SameSiteNoneMode && !cfg.CookieSecure {
+		return config{}, fmt.Errorf("COOKIE_SAMESITE=None requires COOKIE_SECURE=true")
+	}
+	if cfg.CookieSameSite == http.SameSiteNoneMode && cfg.CookieSecure && corsHasHTTP(cfg.CORSOrigin) {
+		return config{}, fmt.Errorf("CORS_ORIGIN must use https when COOKIE_SAMESITE=None and COOKIE_SECURE=true")
+	}
+	if (cfg.SupabaseURL == "") != (cfg.SupabaseServiceKey == "") {
+		return config{}, fmt.Errorf("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must both be set, or both unset")
+	}
+	if cfg.CookieSameSite == http.SameSiteNoneMode && cfg.CookieSecure && cfg.SupabaseURL == "" {
+		return config{}, fmt.Errorf("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required in production (Render disk is ephemeral)")
+	}
+	if cfg.SupabaseBucket == "" {
+		cfg.SupabaseBucket = defaultSupabaseBucket
 	}
 	if cfg.GeminiEmbedBatch < 1 {
 		cfg.GeminiEmbedBatch = defaultEmbedBatch
@@ -173,12 +220,6 @@ func loadConfig() (config, error) {
 	if cfg.QuizIPPerDay < 1 {
 		cfg.QuizIPPerDay = defaultQuizIPPerDay
 	}
-	if cfg.CookieSameSite == http.SameSiteNoneMode {
-		cfg.CookieSecure = true
-	}
-	if cfg.QuizResetHour < 0 || cfg.QuizResetHour > 23 {
-		cfg.QuizResetHour = defaultQuizResetHour
-	}
 	if cfg.GuestTTL < time.Hour {
 		cfg.GuestTTL = defaultGuestTTL
 	}
@@ -224,27 +265,95 @@ func getenvInt(key string, fallback int) int {
 	return n
 }
 
-func getenvBool(key string, fallback bool) bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
-	switch v {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
+func corsHasWildcard(csv string) bool {
+	for _, o := range splitCSV(csv) {
+		if o == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+func corsHasHTTP(csv string) bool {
+	for _, o := range splitCSV(csv) {
+		if strings.HasPrefix(strings.ToLower(o), "http://") {
+			return true
+		}
+	}
+	return false
+}
+
+func parseCookieSameSite(v string) (http.SameSite, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "lax":
+		return http.SameSiteLaxMode, nil
+	case "none":
+		return http.SameSiteNoneMode, nil
+	case "strict":
+		return http.SameSiteStrictMode, nil
 	default:
-		return fallback
+		return 0, fmt.Errorf("COOKIE_SAMESITE must be Lax, None, or Strict")
 	}
 }
 
-func parseCookieSameSite(v string) http.SameSite {
+func parseCookieSecure(v string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "none":
-		return http.SameSiteNoneMode
-	case "strict":
-		return http.SameSiteStrictMode
+	case "", "0", "false", "no", "off":
+		return false, nil
+	case "1", "true", "yes", "on":
+		return true, nil
 	default:
-		return http.SameSiteLaxMode
+		return false, fmt.Errorf("COOKIE_SECURE must be true or false")
 	}
+}
+
+func parseQuizResetHour(v string) (int, error) {
+	if strings.TrimSpace(v) == "" {
+		return defaultQuizResetHour, nil
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 || n > 23 {
+		return 0, fmt.Errorf("QUIZ_RESET_HOUR must be an integer 0-23")
+	}
+	return n, nil
+}
+
+func parseClientIPHeader(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", nil
+	}
+	canon := http.CanonicalHeaderKey(v)
+	if strings.EqualFold(canon, "X-Forwarded-For") {
+		return "", fmt.Errorf("CLIENT_IP_HEADER must not be X-Forwarded-For; use True-Client-IP on Render")
+	}
+	return canon, nil
+}
+
+func validateTrustedProxies(proxies []string) error {
+	for _, p := range proxies {
+		pl := strings.ToLower(strings.TrimSpace(p))
+		if pl == "0.0.0.0/0" || pl == "::/0" {
+			return fmt.Errorf("TRUSTED_PROXIES must not trust all addresses (%s); leave it unset and set CLIENT_IP_HEADER=True-Client-IP on Render", p)
+		}
+		if !strings.Contains(p, "/") {
+			if net.ParseIP(p) == nil {
+				return fmt.Errorf("TRUSTED_PROXIES: invalid IP address %q", p)
+			}
+			continue
+		}
+		if _, _, err := net.ParseCIDR(p); err != nil {
+			return fmt.Errorf("TRUSTED_PROXIES: %w", err)
+		}
+	}
+	return nil
+}
+
+func ephemeralStorageWarning(cfg config) string {
+	if cfg.SupabaseURL != "" {
+		return ""
+	}
+	return "warning: SUPABASE_URL is unset; uploads use disk " + cfg.StorageDir + " which is ephemeral on Render"
 }
 
 func getenvInt64(key string, fallback int64) int64 {

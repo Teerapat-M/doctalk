@@ -61,7 +61,7 @@ event: error
 data: {"error":"gemini chat: HTTP 503: UNAVAILABLE: high demand"}
 ```
 
-Errors keep Gemini's status and message with the API key stripped (including `?key=`). The key is sent only as `x-goog-api-key`, never as a query parameter. Concurrent `/ask` (and quiz / embed) calls share a bounded Gemini slot limiter (`GEMINI_MAX_IN_FLIGHT`, default 2) that is released before backoff sleeps. Gin runs in release mode unless `GIN_MODE` is set; trusted proxies default to none (`TRUSTED_PROXIES` comma-separated to override).
+Errors keep Gemini's status and message with the API key stripped (including `?key=`). The key is sent only as `x-goog-api-key`, never as a query parameter. Concurrent `/ask` (and quiz / embed) calls share a bounded Gemini slot limiter (`GEMINI_MAX_IN_FLIGHT`, default 2) that is released before backoff sleeps. Gin runs in release mode unless `GIN_MODE` is set. Per-IP limits use `RemoteAddr` unless `CLIENT_IP_HEADER` is set (Render: `True-Client-IP`). `TRUSTED_PROXIES` stays empty so client `X-Forwarded-For` is ignored; `0.0.0.0/0` is rejected.
 
 ## Phase 3.5 — Excel import and quiz
 
@@ -178,12 +178,14 @@ Windows cmd.exe: `openssl rand -base64 32` then `set JWT_SECRET=...`
 
 Cookie flags: `COOKIE_SAMESITE` (default `Lax`) and `COOKIE_SECURE` (default false) for local Vite on the same site. For a Vercel client talking to Render, set `COOKIE_SAMESITE=None` and `COOKIE_SECURE=true`. The client sends `credentials: "include"`. `CORS_ORIGIN` is an explicit allowlist (both `localhost` and `127.0.0.1`); it never pairs `*` with `Allow-Credentials`.
 
-`GET /quota` returns used/remaining/limit for quiz, ask, and ingest. The quiz quota-reached frame reads that payload. Daily quiz quota is stored in Postgres per guest (survives restarts) and resets at `QUIZ_RESET_HOUR` (7) in **Asia/Bangkok**. Per-IP quiz hits are a looser in-memory abuse cap (`QUIZ_IP_PER_DAY`). Ask and ingest per-minute caps stay in memory. A request is counted only after it passes validation; upstream Gemini failures are not charged.
+`GET /quota` returns used/remaining/limit for quiz, ask, and ingest. The quiz quota-reached frame reads that payload. Daily quiz quota is stored in Postgres per guest (survives restarts) and resets at `QUIZ_RESET_HOUR` (7) in **Asia/Bangkok**. The looser per-IP quiz cap (`QUIZ_IP_PER_DAY`) is also in Postgres. Ask and ingest per-minute caps stay in memory. A request is counted only after it passes validation; a refund deletes that request's own counter row, not the latest one. Cookieless or rejected JWT requests do not write a `guests` row.
+
+Production cookies are `COOKIE_SAMESITE=None` and `COOKIE_SECURE=true` with `CORS_ORIGIN` set to the Vercel https origin. Startup fails on invalid cookie flags, SameSite=None without Secure, a wildcard or `http://` CORS origin in that mode, a bad `QUIZ_RESET_HOUR` or `TRUSTED_PROXIES`, missing Supabase in production, or a missing required env var (`DATABASE_URL`, `JWT_SECRET`).
 
 | Env | Default |
 | --- | --- |
 | `QUIZ_PER_DAY` | 5, window resets at `QUIZ_RESET_HOUR` (7) in **Asia/Bangkok** |
-| `QUIZ_IP_PER_DAY` | 20 (loose per-IP abuse cap) |
+| `QUIZ_IP_PER_DAY` | 20 (loose per-IP abuse cap, Postgres) |
 | `ASK_PER_MINUTE` | 20 |
 | `INGEST_PER_MINUTE` | 10 |
 | `MAX_UPLOAD_BYTES` | 10485760 (10 MiB) |
@@ -194,6 +196,12 @@ Cookie flags: `COOKIE_SAMESITE` (default `Lax`) and `COOKIE_SECURE` (default fal
 | `COOKIE_SECURE` | false locally; true with `SameSite=None` |
 
 Over quota, `/ask`, `/quiz`, and ingest return **429** with `Retry-After` and `{"error":"..."}`. `/ask` does this as JSON **before** the SSE stream starts.
+
+## Phase 6 — deploy
+
+Free-tier layout: **Supabase** (Postgres + pgvector + private Storage bucket `doctalk-uploads`), **Render** (`render.yaml` Blueprint for `doctalk-server`, Singapore, health `/health`), **Vercel** (`doctalk-client`, SPA rewrite, `VITE_API_URL`). Secrets are filled in the dashboards, not in git.
+
+Step-by-step dashboard instructions, env tables, and URL wiring (`CORS_ORIGIN`, `VITE_API_URL`) are in **[DEPLOY.md](DEPLOY.md)**.
 
 The Vite default port is **3917** (`strictPort`) because 4317 is taken on the owner's PC. If 3917 is busy, set `VITE_PORT` to a free port **and** set `CORS_ORIGIN` to both hostnames on that port, for example `http://localhost:3920,http://127.0.0.1:3920`.
 
@@ -387,5 +395,5 @@ CI runs both, with a `pgvector/pgvector:pg16` service for the server job. Gemini
 - **Phase 3:** ask endpoint with top-k retrieval, Gemini answers with citations, SSE streaming.
 - **Phase 3.5:** Excel/CSV ingest, quiz generation, quiz UI. (done)
 - **Phase 4:** chat UI. (done)
-- **Phase 5:** guest auth and rate limiting. (this PR)
-- **Phase 6:** deploy (Render server, Vercel client, Supabase Postgres, all free tiers).
+- **Phase 5:** guest auth and rate limiting. (done)
+- **Phase 6:** deploy config (Render + Vercel + Supabase, free tiers). See [DEPLOY.md](DEPLOY.md).
