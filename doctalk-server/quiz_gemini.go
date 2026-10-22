@@ -48,21 +48,21 @@ func newGeminiQuiz(cfg config, lim *slotLimiter) *geminiQuiz {
 	if attempts < 1 {
 		attempts = defaultGeminiAttempts
 	}
-	reqTimeout := cfg.GeminiRequestTimeout
-	if reqTimeout <= 0 {
-		reqTimeout = defaultGeminiRequestTimeout
+	totalTimeout := cfg.GeminiTotalTimeout
+	if totalTimeout <= 0 {
+		totalTimeout = defaultGeminiTotalTimeout
 	}
 	return &geminiQuiz{
 		apiKey:     cfg.GeminiAPIKey,
 		model:      model,
 		fallback:   cfg.GeminiFallbackModel,
 		baseURL:    strings.TrimRight(base, "/"),
-		http:       &http.Client{Timeout: reqTimeout},
+		http:       &http.Client{Timeout: totalTimeout},
 		maxRetries: attempts,
 		budget:     budget,
 		baseDelay:  cfg.GeminiRetryBaseDelay,
 		maxDelay:   cfg.GeminiRetryMaxDelay,
-		reqTimeout: reqTimeout,
+		reqTimeout: totalTimeout,
 		sleep:      defaultSleep,
 		limiter:    lim,
 	}
@@ -142,7 +142,8 @@ func (g *geminiQuiz) GenerateTypedJSON(ctx context.Context, system, user string,
 	out, err := g.generateModel(ctx, g.model, payload, g.maxRetries)
 	if err != nil && g.fallback != "" && g.fallback != g.model && isGeminiFallback(err) {
 		log.Printf("quiz: primary model %s unavailable (%s); trying GEMINI_FALLBACK_MODEL %s", g.model, redactSecrets(err.Error(), g.apiKey), g.fallback)
-		return g.generateModel(ctx, g.fallback, payload, g.maxRetries)
+		out, err = g.generateModel(ctx, g.fallback, payload, g.maxRetries)
+		return out, rewriteFallbackNotFound(g.fallback, err)
 	}
 	return out, err
 }

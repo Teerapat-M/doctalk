@@ -41,6 +41,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("GEMINI_RETRY_BASE_DELAY_MS", "")
 	t.Setenv("GEMINI_RETRY_MAX_DELAY_MS", "")
 	t.Setenv("GEMINI_REQUEST_TIMEOUT_SECONDS", "")
+	t.Setenv("GEMINI_TOTAL_TIMEOUT_SECONDS", "")
 	t.Setenv("TRUSTED_PROXIES", "")
 	t.Setenv("CLIENT_IP_HEADER", "")
 	t.Setenv("JWT_SECRET", testJWTSecret)
@@ -104,6 +105,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.GeminiRequestTimeout != defaultGeminiRequestTimeout {
 		t.Fatalf("request timeout=%s", cfg.GeminiRequestTimeout)
+	}
+	if cfg.GeminiTotalTimeout != defaultGeminiTotalTimeout {
+		t.Fatalf("total timeout=%s", cfg.GeminiTotalTimeout)
 	}
 	if cfg.GeminiMaxInFlight != defaultGeminiMaxInFlight {
 		t.Fatalf("in-flight=%d", cfg.GeminiMaxInFlight)
@@ -337,7 +341,6 @@ func TestLoadConfigFallbackAliasAndBounds(t *testing.T) {
 	t.Setenv("GEMINI_RETRY_ATTEMPTS", "99")
 	t.Setenv("GEMINI_RETRY_BASE_DELAY_MS", "10")
 	t.Setenv("GEMINI_RETRY_MAX_DELAY_MS", "100")
-	t.Setenv("GEMINI_REQUEST_TIMEOUT_SECONDS", "1")
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -351,9 +354,6 @@ func TestLoadConfigFallbackAliasAndBounds(t *testing.T) {
 	if cfg.GeminiRetryBaseDelay != defaultGeminiRetryBase {
 		t.Fatalf("base delay=%s", cfg.GeminiRetryBaseDelay)
 	}
-	if cfg.GeminiRequestTimeout != defaultGeminiRequestTimeout {
-		t.Fatalf("short timeout should bound to default, got %s", cfg.GeminiRequestTimeout)
-	}
 
 	t.Setenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite")
 	t.Setenv("GEMINI_CHAT_FALLBACK_MODEL", "ignored-alias")
@@ -363,6 +363,19 @@ func TestLoadConfigFallbackAliasAndBounds(t *testing.T) {
 	}
 	if cfg.GeminiFallbackModel != "gemini-2.5-flash-lite" {
 		t.Fatalf("GEMINI_FALLBACK_MODEL should win, got %q", cfg.GeminiFallbackModel)
+	}
+}
+
+func TestLoadConfigRequestTimeoutBelow5FailsFast(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	t.Setenv("GEMINI_REQUEST_TIMEOUT_SECONDS", "1")
+	_, err := loadConfig()
+	if err == nil {
+		t.Fatal("expected error for GEMINI_REQUEST_TIMEOUT_SECONDS=1")
+	}
+	if !strings.Contains(err.Error(), "GEMINI_REQUEST_TIMEOUT_SECONDS") || !strings.Contains(err.Error(), "at least 5") {
+		t.Fatalf("got %v", err)
 	}
 }
 

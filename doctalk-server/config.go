@@ -23,7 +23,7 @@ const (
 	defaultEmbedBatch           = 16
 	defaultEmbedModel           = "gemini-embedding-001"
 	defaultChatModel            = "gemini-3.8-flash"
-	defaultGeminiFallbackModel  = "gemini-2.0-flash"
+	defaultGeminiFallbackModel  = "gemini-flash-lite-latest"
 	defaultGeminiBaseURL        = "https://generativelanguage.googleapis.com"
 	defaultAskTopK              = 5
 	defaultAskTopKMax           = 20
@@ -34,6 +34,7 @@ const (
 	defaultGeminiRetryBase      = 500 * time.Millisecond
 	defaultGeminiRetryMaxDelay  = 4 * time.Second
 	defaultGeminiRequestTimeout = 25 * time.Second
+	defaultGeminiTotalTimeout   = 90 * time.Second
 	defaultGeminiMaxInFlight    = 2
 	maxQuestionRunes            = 4000
 	maxAskDocumentIDs           = 32
@@ -71,6 +72,7 @@ type config struct {
 	GeminiRetryBaseDelay time.Duration
 	GeminiRetryMaxDelay  time.Duration
 	GeminiRequestTimeout time.Duration
+	GeminiTotalTimeout   time.Duration
 	QuizNMax             int
 	AskTopK              int
 	AskTopKMax           int
@@ -112,7 +114,6 @@ func loadConfig() (config, error) {
 		GeminiRetryBudget:    time.Duration(getenvInt("GEMINI_RETRY_BUDGET_SECONDS", 8)) * time.Second,
 		GeminiRetryBaseDelay: time.Duration(getenvInt("GEMINI_RETRY_BASE_DELAY_MS", 500)) * time.Millisecond,
 		GeminiRetryMaxDelay:  time.Duration(getenvInt("GEMINI_RETRY_MAX_DELAY_MS", 4000)) * time.Millisecond,
-		GeminiRequestTimeout: time.Duration(getenvInt("GEMINI_REQUEST_TIMEOUT_SECONDS", 25)) * time.Second,
 		QuizNMax:             getenvInt("QUIZ_N_MAX", defaultQuizNMax),
 		AskTopK:              getenvInt("ASK_TOP_K", defaultAskTopK),
 		AskTopKMax:           getenvInt("ASK_TOP_K_MAX", defaultAskTopKMax),
@@ -263,13 +264,36 @@ func loadConfig() (config, error) {
 	if cfg.GeminiRetryMaxDelay > 30*time.Second {
 		cfg.GeminiRetryMaxDelay = 30 * time.Second
 	}
-	if cfg.GeminiRequestTimeout < 5*time.Second {
-		cfg.GeminiRequestTimeout = defaultGeminiRequestTimeout
+	idle, err := parseTimeoutSeconds("GEMINI_REQUEST_TIMEOUT_SECONDS", defaultGeminiRequestTimeout)
+	if err != nil {
+		return config{}, err
 	}
-	if cfg.GeminiRequestTimeout > cfg.AskTimeout {
-		cfg.GeminiRequestTimeout = cfg.AskTimeout
+	total, err := parseTimeoutSeconds("GEMINI_TOTAL_TIMEOUT_SECONDS", defaultGeminiTotalTimeout)
+	if err != nil {
+		return config{}, err
 	}
+	if total < idle {
+		return config{}, fmt.Errorf("GEMINI_TOTAL_TIMEOUT_SECONDS must be at least GEMINI_REQUEST_TIMEOUT_SECONDS")
+	}
+	cfg.GeminiRequestTimeout = idle
+	cfg.GeminiTotalTimeout = total
 	return cfg, nil
+}
+
+func parseTimeoutSeconds(key string, fallback time.Duration) (time.Duration, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer number of seconds", key)
+	}
+	d := time.Duration(n) * time.Second
+	if d < 5*time.Second {
+		return 0, fmt.Errorf("%s must be at least 5 seconds", key)
+	}
+	return d, nil
 }
 
 func loadGeminiFallbackModel() string {

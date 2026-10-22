@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -48,21 +49,21 @@ func newGeminiEmbedder(cfg config, lim *slotLimiter) *geminiEmbedder {
 	if attempts < 1 {
 		attempts = defaultGeminiAttempts
 	}
-	reqTimeout := cfg.GeminiRequestTimeout
-	if reqTimeout <= 0 {
-		reqTimeout = defaultGeminiRequestTimeout
+	totalTimeout := cfg.GeminiTotalTimeout
+	if totalTimeout <= 0 {
+		totalTimeout = defaultGeminiTotalTimeout
 	}
 	return &geminiEmbedder{
 		apiKey:     cfg.GeminiAPIKey,
 		model:      cfg.GeminiEmbeddingModel,
 		baseURL:    strings.TrimRight(base, "/"),
-		http:       &http.Client{Timeout: reqTimeout},
+		http:       &http.Client{Timeout: totalTimeout},
 		batchSize:  cfg.GeminiEmbedBatch,
 		maxRetries: attempts,
 		budget:     budget,
 		baseDelay:  cfg.GeminiRetryBaseDelay,
 		maxDelay:   cfg.GeminiRetryMaxDelay,
-		reqTimeout: reqTimeout,
+		reqTimeout: totalTimeout,
 		sleep:      defaultSleep,
 		limiter:    lim,
 	}
@@ -324,6 +325,77 @@ func withGeminiTimeout(ctx context.Context, d time.Duration) (context.Context, c
 		return ctx, func() {}
 	}
 	return context.WithTimeout(ctx, d)
+}
+
+type geminiWatch struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	idle     *time.Timer
+	idleDur  time.Duration
+	total    *time.Timer
+	timedOut atomic.Bool
+}
+
+func startGeminiWatch(parent context.Context, idle, total time.Duration) *geminiWatch {
+	ctx, cancel := context.WithCancel(parent)
+	w := &geminiWatch{ctx: ctx, cancel: cancel, idleDur: idle}
+	fire := func() {
+		w.timedOut.Store(true)
+		cancel()
+	}
+	if total > 0 {
+		w.total = time.AfterFunc(total, fire)
+	}
+	if idle > 0 {
+		w.idle = time.AfterFunc(idle, fire)
+	}
+	return w
+}
+
+func (w *geminiWatch) err() error {
+	if w == nil {
+		return nil
+	}
+	if w.timedOut.Load() {
+		return context.DeadlineExceeded
+	}
+	return w.ctx.Err()
+}
+
+func (w *geminiWatch) bump() {
+	if w == nil || w.idle == nil || w.idleDur <= 0 {
+		return
+	}
+	if !w.idle.Stop() {
+		return
+	}
+	w.idle.Reset(w.idleDur)
+}
+
+func (w *geminiWatch) stop() {
+	if w == nil {
+		return
+	}
+	if w.idle != nil {
+		w.idle.Stop()
+	}
+	if w.total != nil {
+		w.total.Stop()
+	}
+	w.cancel()
+}
+
+type bumpReader struct {
+	r    io.Reader
+	bump func()
+}
+
+func (b bumpReader) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if n > 0 && b.bump != nil {
+		b.bump()
+	}
+	return n, err
 }
 
 func isTimeoutErr(err error) bool {

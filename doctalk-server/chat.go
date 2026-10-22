@@ -19,18 +19,19 @@ type ChatStreamer interface {
 }
 
 type geminiChat struct {
-	apiKey     string
-	model      string
-	fallback   string
-	baseURL    string
-	http       *http.Client
-	maxRetries int
-	budget     time.Duration
-	baseDelay  time.Duration
-	maxDelay   time.Duration
-	reqTimeout time.Duration
-	sleep      func(context.Context, time.Duration) error
-	limiter    *slotLimiter
+	apiKey       string
+	model        string
+	fallback     string
+	baseURL      string
+	http         *http.Client
+	maxRetries   int
+	budget       time.Duration
+	baseDelay    time.Duration
+	maxDelay     time.Duration
+	idleTimeout  time.Duration
+	totalTimeout time.Duration
+	sleep        func(context.Context, time.Duration) error
+	limiter      *slotLimiter
 }
 
 func newGeminiChat(cfg config, lim *slotLimiter) *geminiChat {
@@ -46,23 +47,28 @@ func newGeminiChat(cfg config, lim *slotLimiter) *geminiChat {
 	if budget <= 0 {
 		budget = defaultGeminiRetryBudget
 	}
-	reqTimeout := cfg.GeminiRequestTimeout
-	if reqTimeout <= 0 {
-		reqTimeout = defaultGeminiRequestTimeout
+	idleTimeout := cfg.GeminiRequestTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = defaultGeminiRequestTimeout
+	}
+	totalTimeout := cfg.GeminiTotalTimeout
+	if totalTimeout <= 0 {
+		totalTimeout = defaultGeminiTotalTimeout
 	}
 	return &geminiChat{
-		apiKey:     cfg.GeminiAPIKey,
-		model:      cfg.GeminiChatModel,
-		fallback:   cfg.GeminiFallbackModel,
-		baseURL:    strings.TrimRight(base, "/"),
-		http:       &http.Client{Timeout: reqTimeout},
-		maxRetries: attempts,
-		budget:     budget,
-		baseDelay:  cfg.GeminiRetryBaseDelay,
-		maxDelay:   cfg.GeminiRetryMaxDelay,
-		reqTimeout: reqTimeout,
-		sleep:      defaultSleep,
-		limiter:    lim,
+		apiKey:       cfg.GeminiAPIKey,
+		model:        cfg.GeminiChatModel,
+		fallback:     cfg.GeminiFallbackModel,
+		baseURL:      strings.TrimRight(base, "/"),
+		http:         &http.Client{Timeout: totalTimeout},
+		maxRetries:   attempts,
+		budget:       budget,
+		baseDelay:    cfg.GeminiRetryBaseDelay,
+		maxDelay:     cfg.GeminiRetryMaxDelay,
+		idleTimeout:  idleTimeout,
+		totalTimeout: totalTimeout,
+		sleep:        defaultSleep,
+		limiter:      lim,
 	}
 }
 
@@ -100,7 +106,7 @@ func (g *geminiChat) StreamAnswer(ctx context.Context, question string, chunks [
 	err = g.streamModel(ctx, g.model, payload, emit, g.maxRetries)
 	if err != nil && g.fallback != "" && g.fallback != g.model && isGeminiFallback(err) {
 		log.Printf("ask: primary model %s unavailable (%s); trying GEMINI_FALLBACK_MODEL %s", g.model, redactSecrets(err.Error(), g.apiKey), g.fallback)
-		return g.streamModel(ctx, g.fallback, payload, emit, g.maxRetries)
+		return rewriteFallbackNotFound(g.fallback, g.streamModel(ctx, g.fallback, payload, emit, g.maxRetries))
 	}
 	return err
 }
@@ -148,9 +154,9 @@ type chatGenConfig struct {
 }
 
 func (g *geminiChat) doStream(ctx context.Context, model string, payload []byte, emit func(string) error) (time.Duration, error) {
-	callCtx, cancel := withGeminiTimeout(ctx, g.reqTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, g.endpointFor(model), bytes.NewReader(payload))
+	watch := startGeminiWatch(ctx, g.idleTimeout, g.totalTimeout)
+	defer watch.stop()
+	req, err := http.NewRequestWithContext(watch.ctx, http.MethodPost, g.endpointFor(model), bytes.NewReader(payload))
 	if err != nil {
 		return -1, g.errf("gemini chat: %v", err)
 	}
@@ -160,8 +166,8 @@ func (g *geminiChat) doStream(ctx context.Context, model string, payload []byte,
 
 	res, err := g.http.Do(req)
 	if err != nil {
-		if callCtx.Err() != nil {
-			return -1, callCtx.Err()
+		if watch.err() != nil {
+			return -1, watch.err()
 		}
 		if isTimeoutErr(err) {
 			return -1, context.DeadlineExceeded
@@ -178,9 +184,13 @@ func (g *geminiChat) doStream(ctx context.Context, model string, payload []byte,
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 		return -1, g.httpErr(res.StatusCode, body)
 	}
-	if err := parseGeminiSSE(callCtx, res.Body, emit); err != nil {
-		if callCtx.Err() != nil {
-			return -1, callCtx.Err()
+	body := io.Reader(res.Body)
+	if g.idleTimeout > 0 {
+		body = bumpReader{r: res.Body, bump: watch.bump}
+	}
+	if err := parseGeminiSSE(watch.ctx, body, emit); err != nil {
+		if watch.err() != nil {
+			return -1, watch.err()
 		}
 		if isTimeoutErr(err) {
 			return -1, context.DeadlineExceeded
@@ -188,6 +198,17 @@ func (g *geminiChat) doStream(ctx context.Context, model string, payload []byte,
 		return -1, err
 	}
 	return -1, nil
+}
+
+func rewriteFallbackNotFound(model string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if !strings.Contains(err.Error(), "HTTP 404") {
+		return err
+	}
+	name := strings.TrimPrefix(model, "models/")
+	return fmt.Errorf("fallback model %s not found; set GEMINI_FALLBACK_MODEL", name)
 }
 
 func (g *geminiChat) errf(format string, args ...any) error {

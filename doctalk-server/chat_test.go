@@ -374,3 +374,116 @@ func TestGeminiChatFallbackAfter503(t *testing.T) {
 		t.Fatalf("primary=%d fallback=%d", primary.Load(), fallback.Load())
 	}
 }
+
+func TestGeminiChatSteadyStreamNotCutByIdleTimeout(t *testing.T) {
+	const chunk = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"x\"}]}}]}\n\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		if fl != nil {
+			fl.Flush()
+		}
+		for i := 0; i < 6; i++ {
+			time.Sleep(40 * time.Millisecond)
+			_, _ = w.Write([]byte(chunk))
+			if fl != nil {
+				fl.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	g := &geminiChat{
+		apiKey:       "k",
+		model:        defaultChatModel,
+		baseURL:      srv.URL,
+		http:         srv.Client(),
+		maxRetries:   1,
+		idleTimeout:  90 * time.Millisecond,
+		totalTimeout: time.Second,
+		sleep:        func(context.Context, time.Duration) error { return nil },
+	}
+	var got strings.Builder
+	if err := g.StreamAnswer(context.Background(), "q", nil, func(s string) error {
+		got.WriteString(s)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != "xxxxxx" {
+		t.Fatalf("got %q", got.String())
+	}
+}
+
+func TestGeminiChatIdleStreamTimesOut(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}]}\n\n"))
+		if fl != nil {
+			fl.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+		case <-time.After(time.Second):
+		}
+	}))
+	defer srv.Close()
+
+	g := &geminiChat{
+		apiKey:       "k",
+		model:        defaultChatModel,
+		baseURL:      srv.URL,
+		http:         srv.Client(),
+		maxRetries:   1,
+		idleTimeout:  60 * time.Millisecond,
+		totalTimeout: time.Second,
+		sleep:        func(context.Context, time.Duration) error { return nil },
+	}
+	start := time.Now()
+	err := g.StreamAnswer(context.Background(), "q", nil, func(string) error { return nil })
+	if err == nil {
+		t.Fatal("expected idle timeout")
+	}
+	if !isTimeoutErr(err) {
+		t.Fatalf("want timeout, got %v", err)
+	}
+	if time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("idle timeout took %s", time.Since(start))
+	}
+}
+
+func TestGeminiChatFallback404ClearError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "primary-model") {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"status":"UNAVAILABLE","message":"high demand"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"status":"NOT_FOUND","message":"models/gemini-2.0-flash is not found"}}`))
+	}))
+	defer srv.Close()
+
+	g := &geminiChat{
+		apiKey:     "k",
+		model:      "primary-model",
+		fallback:   "gemini-2.0-flash",
+		baseURL:    srv.URL,
+		http:       srv.Client(),
+		maxRetries: 1,
+		budget:     time.Second,
+		sleep:      func(context.Context, time.Duration) error { return nil },
+	}
+	err := g.StreamAnswer(context.Background(), "q", nil, func(string) error { return nil })
+	if err == nil {
+		t.Fatal("expected 404")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "fallback model gemini-2.0-flash not found; set GEMINI_FALLBACK_MODEL") {
+		t.Fatalf("want clear fallback 404, got %s", msg)
+	}
+	if strings.Contains(msg, "HTTP 404") {
+		t.Fatalf("raw HTTP 404 leaked: %s", msg)
+	}
+}
