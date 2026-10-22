@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: doctalk
       POSTGRES_DB: doctalk
     ports:
-      - "5432:5432"
+      - "${DB_PORT:-5435}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -19,16 +19,22 @@ services:
     build:
       context: ./doctalk-server
     ports:
-      - "8080:8080"
+      - "${API_PORT:-8081}:8081"
     environment:
-      PORT: "8080"
+      PORT: "8081"
+      API_PORT: "8081"
       DATABASE_URL: postgres://doctalk:doctalk@db:5432/doctalk?sslmode=disable
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5174}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-001}
+      STORAGE_DIR: /data/uploads
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-10485760}
+    volumes:
+      - uploads:/data/uploads
     depends_on:
       db:
         condition: service_healthy
 
 volumes:
   pgdata:
+  uploads:

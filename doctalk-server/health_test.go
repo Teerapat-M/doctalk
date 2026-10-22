@@ -25,7 +25,7 @@ func (f fakePinger) PingContext(context.Context) error {
 
 func TestHealthOKWhenDBPings(t *testing.T) {
 	t.Parallel()
-	r := newRouter(fakePinger{}, config{CORSOrigin: "*"})
+	r := newRouter(&server{ping: fakePinger{}, cfg: config{CORSOrigin: "*"}})
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	r.ServeHTTP(w, req)
@@ -41,7 +41,7 @@ func TestHealthOKWhenDBPings(t *testing.T) {
 
 func TestHealthUnhealthyWhenDBFails(t *testing.T) {
 	t.Parallel()
-	r := newRouter(fakePinger{err: errors.New("connection refused")}, config{CORSOrigin: "*"})
+	r := newRouter(&server{ping: fakePinger{err: errors.New("connection refused")}, cfg: config{CORSOrigin: "*"}})
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	r.ServeHTTP(w, req)

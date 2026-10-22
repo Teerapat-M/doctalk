@@ -3,6 +3,7 @@ module github.com/Teerapat-M/doctalk/doctalk-server
 go 1.22
 
 require (
+	github.com/dslipak/pdf v0.0.2
 	github.com/gin-gonic/gin v1.10.0
 	github.com/jackc/pgx/v5 v5.7.2
 )
