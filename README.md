@@ -61,7 +61,7 @@ event: error
 data: {"error":"gemini chat: HTTP 503: UNAVAILABLE: high demand"}
 ```
 
-Errors keep Gemini's status and message with the API key stripped (including `?key=`). The key is sent only as `x-goog-api-key`, never as a query parameter. Concurrent `/ask` (and quiz / embed) calls share a bounded Gemini slot limiter (`GEMINI_MAX_IN_FLIGHT`, default 2) that is released before backoff sleeps. Gin runs in release mode unless `GIN_MODE` is set; trusted proxies default to none (`TRUSTED_PROXIES` comma-separated to override).
+Errors keep Gemini's status and message with the API key stripped (including `?key=`). The key is sent only as `x-goog-api-key`, never as a query parameter. Concurrent `/ask` (and quiz / embed) calls share a bounded Gemini slot limiter (`GEMINI_MAX_IN_FLIGHT`, default 2) that is released before backoff sleeps. Gin runs in release mode unless `GIN_MODE` is set. Per-IP limits use `RemoteAddr` unless `CLIENT_IP_HEADER` is set (Render: `True-Client-IP`). `TRUSTED_PROXIES` stays empty so client `X-Forwarded-For` is ignored; `0.0.0.0/0` is rejected.
 
 ## Phase 3.5 — Excel import and quiz
 
@@ -180,7 +180,7 @@ Cookie flags: `COOKIE_SAMESITE` (default `Lax`) and `COOKIE_SECURE` (default fal
 
 `GET /quota` returns used/remaining/limit for quiz, ask, and ingest. The quiz quota-reached frame reads that payload. Daily quiz quota is stored in Postgres per guest (survives restarts) and resets at `QUIZ_RESET_HOUR` (7) in **Asia/Bangkok**. The looser per-IP quiz cap (`QUIZ_IP_PER_DAY`) is also in Postgres. Ask and ingest per-minute caps stay in memory. A request is counted only after it passes validation; a refund deletes that request's own counter row, not the latest one. Cookieless or rejected JWT requests do not write a `guests` row.
 
-Production cookies are `COOKIE_SAMESITE=None` and `COOKIE_SECURE=true` with `CORS_ORIGIN` set to the Vercel origin. Startup fails on SameSite=None without Secure, a wildcard CORS origin, or a missing required env var (`DATABASE_URL`, `JWT_SECRET`).
+Production cookies are `COOKIE_SAMESITE=None` and `COOKIE_SECURE=true` with `CORS_ORIGIN` set to the Vercel https origin. Startup fails on invalid cookie flags, SameSite=None without Secure, a wildcard or `http://` CORS origin in that mode, a bad `QUIZ_RESET_HOUR` or `TRUSTED_PROXIES`, missing Supabase in production, or a missing required env var (`DATABASE_URL`, `JWT_SECRET`).
 
 | Env | Default |
 | --- | --- |

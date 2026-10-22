@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -335,6 +336,125 @@ func TestQuizIPCapPersistsPerAddress(t *testing.T) {
 	if w := post(b, idB, "203.0.113.51"); w.Code != http.StatusOK {
 		t.Fatalf("other ip=%d body=%s", w.Code, w.Body.String())
 	}
+}
+
+func TestSpoofedForwardedHeadersDoNotBypassIPLimits(t *testing.T) {
+	db := openTestDB(t)
+	t.Run("ask", func(t *testing.T) {
+		id := insertDoneDoc(t, db, "ask-spoof.pdf")
+		insertChunk(t, db, id, 0, 1, "hello", unitVec(0))
+		cfg := config{CORSOrigin: "http://localhost:3917", AskPerMinute: 1, QuizPerDay: 5, QuizIPPerDay: 20, AskTopK: 5, AskTopKMax: 20, AskTimeout: time.Minute}
+		s := &server{db: db, cfg: cfg, limits: newRateLimiter(cfg), embed: &fakeEmbedder{query: unitVec(0)}, chat: &fakeChat{deltas: []string{"ok"}}}
+		r := newRouter(s)
+		body := `{"question":"hi","document_ids":["` + id + `"]}`
+		if w := postAskWithIPHeaders(r, body, "203.0.113.9", "198.51.100.9"); w.Code != http.StatusOK {
+			t.Fatalf("first=%d body=%s", w.Code, w.Body.String())
+		}
+		w := postAskWithIPHeaders(r, body, "203.0.113.9", "198.51.100.9")
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("spoofed headers bypassed ask cap status=%d body=%s", w.Code, w.Body.String())
+		}
+	})
+	t.Run("quiz", func(t *testing.T) {
+		if _, err := db.Exec(`DELETE FROM quiz_quota_hits`); err != nil {
+			t.Fatal(err)
+		}
+		id := insertDoneDoc(t, db, "quiz-spoof.pdf")
+		insertChunk(t, db, id, 0, 1, "hello", unitVec(0))
+		cfg := config{CORSOrigin: "http://localhost:3917", QuizPerDay: 5, QuizIPPerDay: 1, QuizNMax: 20, AskTimeout: time.Minute}
+		s := &server{db: db, cfg: cfg, limits: newRateLimiter(cfg), quiz: &fakeQuiz{bodies: [][]byte{quizJSONFixture(t, 1, 1), quizJSONFixture(t, 1, 1)}}}
+		r := newRouter(s)
+		body := `{"document_ids":["` + id + `"],"n":1,"mode":"generate"}`
+		if w := postQuizWithIPHeaders(r, body, "203.0.113.9", "198.51.100.9"); w.Code != http.StatusOK {
+			t.Fatalf("first=%d body=%s", w.Code, w.Body.String())
+		}
+		w := postQuizWithIPHeaders(r, body, "203.0.113.9", "198.51.100.9")
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("spoofed headers bypassed quiz cap status=%d body=%s", w.Code, w.Body.String())
+		}
+	})
+	t.Run("ingest", func(t *testing.T) {
+		cfg := config{CORSOrigin: "http://localhost:3917", MaxUploadBytes: 1 << 20, IngestPerMinute: 1, AskPerMinute: 20, QuizPerDay: 5, QuizIPPerDay: 20}
+		s := &server{
+			db: db, cfg: cfg, limits: newRateLimiter(cfg), store: newMemStorage(),
+			embed: &fakeEmbedder{}, extract: stubExtract{pages: []pageText{{Number: 1, Text: "hello"}}},
+		}
+		r := newRouter(s)
+		if w := postPDFWithIPHeaders(t, r, "203.0.113.9", "198.51.100.9"); w.Code != http.StatusAccepted {
+			t.Fatalf("first=%d body=%s", w.Code, w.Body.String())
+		}
+		w := postPDFWithIPHeaders(t, r, "203.0.113.9", "198.51.100.9")
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("spoofed headers bypassed ingest cap status=%d body=%s", w.Code, w.Body.String())
+		}
+	})
+}
+
+func TestClientIPHeaderUsesTrueClientIPNotXFF(t *testing.T) {
+	db := openTestDB(t)
+	id := insertDoneDoc(t, db, "ask-header.pdf")
+	insertChunk(t, db, id, 0, 1, "hello", unitVec(0))
+	cfg := config{
+		CORSOrigin: "http://localhost:3917", ClientIPHeader: "True-Client-IP",
+		AskPerMinute: 1, QuizPerDay: 5, QuizIPPerDay: 20, AskTopK: 5, AskTopKMax: 20, AskTimeout: time.Minute,
+	}
+	s := &server{db: db, cfg: cfg, limits: newRateLimiter(cfg), embed: &fakeEmbedder{query: unitVec(0)}, chat: &fakeChat{deltas: []string{"ok", "ok"}}}
+	r := newRouter(s)
+	body := `{"question":"hi","document_ids":["` + id + `"]}`
+	if w := postAskWithIPHeaders(r, body, "8.8.8.8", "10.0.0.1"); w.Code != http.StatusOK {
+		t.Fatalf("first=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := postAskWithIPHeaders(r, body, "9.9.9.9", "10.0.0.1"); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("XFF bypassed True-Client-IP cap status=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := postAskWithIPHeaders(r, body, "9.9.9.9", "10.0.0.2"); w.Code != http.StatusOK {
+		t.Fatalf("other True-Client-IP=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestNewRouterRejectsMalformedTrustedProxies(t *testing.T) {
+	defer func() {
+		got := recover()
+		if got == nil {
+			t.Fatal("expected panic for malformed TRUSTED_PROXIES")
+		}
+		if !strings.Contains(fmt.Sprint(got), "TRUSTED_PROXIES") {
+			t.Fatalf("panic=%v", got)
+		}
+	}()
+	newRouter(&server{cfg: config{TrustedProxies: []string{"not-a-cidr"}}})
+}
+
+func postAskWithIPHeaders(r http.Handler, body, xff, trueClient string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/ask", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", xff)
+	req.Header.Set("True-Client-IP", trueClient)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func postQuizWithIPHeaders(r http.Handler, body, xff, trueClient string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/quiz", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", xff)
+	req.Header.Set("True-Client-IP", trueClient)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func postPDFWithIPHeaders(t *testing.T, r http.Handler, xff, trueClient string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, ctype := pdfForm(t, "spoof.pdf", []byte("%PDF-1.4\nfake"))
+	req := httptest.NewRequest(http.MethodPost, "/documents", body)
+	req.Header.Set("Content-Type", ctype)
+	req.Header.Set("X-Forwarded-For", xff)
+	req.Header.Set("True-Client-IP", trueClient)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
 }
 
 func insertGuestQuizDoc(t *testing.T, db *sql.DB, filename, guest string) string {

@@ -37,6 +37,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("GEMINI_MAX_IN_FLIGHT", "")
 	t.Setenv("GEMINI_RETRY_BUDGET_SECONDS", "")
 	t.Setenv("TRUSTED_PROXIES", "")
+	t.Setenv("CLIENT_IP_HEADER", "")
 	t.Setenv("JWT_SECRET", testJWTSecret)
 	t.Setenv("COOKIE_SECURE", "")
 	t.Setenv("COOKIE_SAMESITE", "")
@@ -120,6 +121,12 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if !strings.Contains(cfg.CORSOrigin, "3917") {
 		t.Fatalf("CORSOrigin=%q", cfg.CORSOrigin)
 	}
+	if len(cfg.TrustedProxies) != 0 {
+		t.Fatalf("TrustedProxies=%v want empty (do not trust X-Forwarded-For)", cfg.TrustedProxies)
+	}
+	if cfg.ClientIPHeader != "" {
+		t.Fatalf("ClientIPHeader=%q", cfg.ClientIPHeader)
+	}
 }
 
 func TestLoadConfigRequiresJWTSecret(t *testing.T) {
@@ -143,6 +150,9 @@ func TestLoadConfigCookieNoneRequiresSecure(t *testing.T) {
 		t.Fatal("expected error when SameSite=None without Secure")
 	}
 	t.Setenv("COOKIE_SECURE", "true")
+	t.Setenv("CORS_ORIGIN", "https://doctalk.vercel.app")
+	t.Setenv("SUPABASE_URL", "https://example.supabase.co")
+	t.Setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role-not-a-real-key")
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -183,6 +193,94 @@ func TestLoadConfigSupabaseKeysTogether(t *testing.T) {
 	}
 	if cfg.SupabaseBucket != defaultSupabaseBucket {
 		t.Fatalf("bucket=%q", cfg.SupabaseBucket)
+	}
+}
+
+func TestLoadConfigRejectsBadCookieSameSite(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	t.Setenv("COOKIE_SAMESITE", "bogus")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error for invalid COOKIE_SAMESITE")
+	}
+}
+
+func TestLoadConfigRejectsUnparseableCookieSecure(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	t.Setenv("COOKIE_SECURE", "not-a-bool")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error for unparseable COOKIE_SECURE")
+	}
+}
+
+func TestLoadConfigRejectsBadQuizResetHour(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	t.Setenv("QUIZ_RESET_HOUR", "24")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error for QUIZ_RESET_HOUR=24")
+	}
+	t.Setenv("QUIZ_RESET_HOUR", "-1")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error for QUIZ_RESET_HOUR=-1")
+	}
+	t.Setenv("QUIZ_RESET_HOUR", "noon")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error for unparseable QUIZ_RESET_HOUR")
+	}
+}
+
+func TestLoadConfigRejectsMalformedTrustedProxies(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	t.Setenv("TRUSTED_PROXIES", "not-a-cidr")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error for malformed TRUSTED_PROXIES")
+	}
+	t.Setenv("TRUSTED_PROXIES", "0.0.0.0/0")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error for TRUSTED_PROXIES=0.0.0.0/0")
+	}
+	t.Setenv("TRUSTED_PROXIES", "")
+	t.Setenv("CLIENT_IP_HEADER", "X-Forwarded-For")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error for CLIENT_IP_HEADER=X-Forwarded-For")
+	}
+}
+
+func TestLoadConfigRejectsHTTPOriginWithNoneSecure(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	t.Setenv("COOKIE_SAMESITE", "None")
+	t.Setenv("COOKIE_SECURE", "true")
+	t.Setenv("CORS_ORIGIN", "http://doctalk.vercel.app")
+	t.Setenv("SUPABASE_URL", "https://example.supabase.co")
+	t.Setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role-not-a-real-key")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error for http CORS origin with SameSite=None")
+	}
+}
+
+func TestLoadConfigProdRequiresSupabase(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	t.Setenv("COOKIE_SAMESITE", "None")
+	t.Setenv("COOKIE_SECURE", "true")
+	t.Setenv("CORS_ORIGIN", "https://doctalk.vercel.app")
+	t.Setenv("SUPABASE_URL", "")
+	t.Setenv("SUPABASE_SERVICE_ROLE_KEY", "")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error when production cookies lack Supabase")
+	}
+}
+
+func TestEphemeralStorageWarning(t *testing.T) {
+	if got := ephemeralStorageWarning(config{StorageDir: "/data/uploads"}); got == "" {
+		t.Fatal("expected warning when Supabase is unset")
+	}
+	if got := ephemeralStorageWarning(config{SupabaseURL: "https://example.supabase.co", StorageDir: "/data/uploads"}); got != "" {
+		t.Fatalf("unexpected warning %q", got)
 	}
 }
 

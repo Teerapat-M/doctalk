@@ -229,7 +229,7 @@ func (s *server) reserveQuota(c *gin.Context, kind rateKind) (res *quotaReservat
 	}
 	now := s.limits.now()
 	guest := guestIDFrom(c)
-	ip := c.ClientIP()
+	ip := s.clientIP(c)
 	retry, ok := s.peekQuota(c.Request.Context(), kind, guest, ip, now)
 	if !ok {
 		write429(c, retry)
@@ -404,7 +404,7 @@ func (s *server) getQuota(c *gin.Context) {
 	}
 	now := s.limits.now()
 	guest := guestIDFrom(c)
-	ip := c.ClientIP()
+	ip := s.clientIP(c)
 	quizStart := quizWindowStart(now, s.limits.loc, s.limits.resetHour)
 	c.JSON(200, quotaJSON{
 		Quiz:   s.quizQuotaBucket(c.Request.Context(), guest, now, quizStart.Add(24*time.Hour).UTC().Format(time.RFC3339)),

@@ -31,8 +31,9 @@ Non-secrets (already set in `render.yaml` for production):
 | `COOKIE_SECURE` | Required `true` when SameSite is `None`. | `true` |
 | `GIN_MODE` | Gin release logging. | `release` |
 | `SUPABASE_BUCKET` | Private Storage bucket name. | `doctalk-uploads` |
-| `STORAGE_DIR` | Disk fallback if Supabase keys are unset (Render disk is ephemeral). | `/data/uploads` |
-| `TRUSTED_PROXIES` | Trust `X-Forwarded-For` behind Render so per-IP quiz caps see the client. | `0.0.0.0/0` |
+| `STORAGE_DIR` | Disk fallback if Supabase keys are unset (Render disk is ephemeral). Production with `COOKIE_SAMESITE=None` requires Supabase. | `/data/uploads` |
+| `CLIENT_IP_HEADER` | Edge client-IP header. Render overwrites `True-Client-IP`; `X-Forwarded-For` is not trusted by default. | `True-Client-IP` |
+| `TRUSTED_PROXIES` | Optional CIDRs for Gin's `X-Forwarded-For` trust. Leave unset. `0.0.0.0/0` is rejected. | (unset) |
 | `GUEST_TTL_HOURS` | Guest document TTL (`last_seen`). | `168` |
 | `QUIZ_PER_DAY` | Per-guest daily quiz quota (Postgres, Asia/Bangkok). | `5` |
 | `QUIZ_RESET_HOUR` | Quiz window reset hour in Asia/Bangkok. | `7` |
@@ -44,6 +45,7 @@ Non-secrets (already set in `render.yaml` for production):
 | `MAX_ROWS` | Spreadsheet row cap. | `2000` |
 | `GEMINI_BASE_URL` | Gemini REST host. | `https://generativelanguage.googleapis.com` |
 | `GEMINI_EMBEDDING_MODEL` | Embedding model. | `gemini-embedding-001` |
+| `GEMINI_EMBED_BATCH` | Texts per embedding request. | `16` |
 | `GEMINI_CHAT_MODEL` | Ask model. | `gemini-3.8-flash` |
 | `GEMINI_QUIZ_MODEL` | Quiz model; empty uses the chat model. | (unset) |
 | `GEMINI_CHAT_FALLBACK_MODEL` | Optional one-shot 503 fallback. | (unset) |
@@ -56,7 +58,7 @@ Non-secrets (already set in `render.yaml` for production):
 
 Render also injects `PORT`. The process binds `0.0.0.0:$PORT`. Do not set `API_PORT` in production (that override is for local compose).
 
-The server **refuses to start** if `DATABASE_URL` or `JWT_SECRET` is missing, `JWT_SECRET` is shorter than 32 bytes, `COOKIE_SAMESITE=None` without `COOKIE_SECURE=true`, `CORS_ORIGIN` contains `*`, or only one of `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` is set.
+The server **refuses to start** if `DATABASE_URL` or `JWT_SECRET` is missing, `JWT_SECRET` is shorter than 32 bytes, `COOKIE_SAMESITE` or `COOKIE_SECURE` is invalid, `COOKIE_SAMESITE=None` without `COOKIE_SECURE=true`, `CORS_ORIGIN` contains `*` or `http://` while SameSite is None+Secure, `QUIZ_RESET_HOUR` is out of 0–23, `TRUSTED_PROXIES` is malformed or `0.0.0.0/0`, production cookies lack Supabase, or only one of `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` is set. Locally, missing Supabase logs a warning that disk storage is ephemeral on Render.
 
 ### Vercel (`doctalk-client`)
 

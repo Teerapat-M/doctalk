@@ -33,8 +33,8 @@ services:
         value: doctalk-uploads
       - key: STORAGE_DIR
         value: /data/uploads
-      - key: TRUSTED_PROXIES
-        value: 0.0.0.0/0
+      - key: CLIENT_IP_HEADER
+        value: True-Client-IP
       - key: GUEST_TTL_HOURS
         value: "168"
       - key: QUIZ_PER_DAY
