@@ -82,4 +82,4 @@ services:
       - key: ASK_TOP_K_MAX
         value: "20"
       - key: ASK_TIMEOUT_SECONDS
-        value: "60"
+        value: "120"

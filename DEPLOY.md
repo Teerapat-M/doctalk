@@ -52,19 +52,19 @@ Non-secrets (already set in `render.yaml` for production):
 | `GEMINI_CHAT_FALLBACK_MODEL` | Alias used only if `GEMINI_FALLBACK_MODEL` is unset. | (unset) |
 | `GEMINI_MAX_IN_FLIGHT` | Concurrent Gemini slots. | `2` |
 | `GEMINI_RETRY_ATTEMPTS` | Max Gemini attempts per model (bounded 1–8). | `3` |
-| `GEMINI_RETRY_BUDGET_SECONDS` | Cap on total retry sleep (bounded to half of `ASK_TIMEOUT_SECONDS`). | `8` |
+| `GEMINI_RETRY_BUDGET_SECONDS` | Cap on total retry *sleep* between Gemini attempts (clamped to half of `ASK_TIMEOUT_SECONDS`). HTTP call time is separate and uses `GEMINI_TOTAL_TIMEOUT_SECONDS`. | `8` |
 | `GEMINI_RETRY_BASE_DELAY_MS` | Exponential backoff start, plus jitter. Honours `Retry-After` when larger. | `500` |
 | `GEMINI_RETRY_MAX_DELAY_MS` | Backoff cap. | `4000` |
 | `GEMINI_REQUEST_TIMEOUT_SECONDS` | Idle / first-token timeout for Gemini streams; resets on each chunk. Values below 5s fail at startup. | `25` |
-| `GEMINI_TOTAL_TIMEOUT_SECONDS` | Hard cap on one Gemini HTTP call (stream, quiz, embed). Must be ≥ idle timeout. | `90` |
+| `GEMINI_TOTAL_TIMEOUT_SECONDS` | Hard cap on one Gemini HTTP call (stream, quiz, embed). Must be ≥ idle timeout and must not exceed `ASK_TIMEOUT_SECONDS`. | `90` |
 | `QUIZ_N_MAX` | Max quiz questions per request. | `20` |
 | `ASK_TOP_K` | Default retrieval k. | `5` |
 | `ASK_TOP_K_MAX` | Max retrieval k. | `20` |
-| `ASK_TIMEOUT_SECONDS` | Ask request timeout. | `60` |
+| `ASK_TIMEOUT_SECONDS` | Outer `/ask` envelope (retrieve + Gemini calls + retry sleep + fallback). Must be ≥ `GEMINI_TOTAL_TIMEOUT_SECONDS`. Remaining time is shared, so a long primary stream can leave little room for retries or fallback. | `120` |
 
 Render also injects `PORT`. The process binds `0.0.0.0:$PORT`. Do not set `API_PORT` in production (that override is for local compose).
 
-The server **refuses to start** if `DATABASE_URL` or `JWT_SECRET` is missing, `JWT_SECRET` is shorter than 32 bytes, `COOKIE_SAMESITE` or `COOKIE_SECURE` is invalid, `COOKIE_SAMESITE=None` without `COOKIE_SECURE=true`, `CORS_ORIGIN` contains `*` or `http://` while SameSite is None+Secure, `QUIZ_RESET_HOUR` is out of 0–23, `TRUSTED_PROXIES` is malformed or `0.0.0.0/0`, production cookies lack Supabase, or only one of `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` is set. Locally, missing Supabase logs a warning that disk storage is ephemeral on Render.
+The server **refuses to start** if `DATABASE_URL` or `JWT_SECRET` is missing, `JWT_SECRET` is shorter than 32 bytes, `COOKIE_SAMESITE` or `COOKIE_SECURE` is invalid, `COOKIE_SAMESITE=None` without `COOKIE_SECURE=true`, `CORS_ORIGIN` contains `*` or `http://` while SameSite is None+Secure, `QUIZ_RESET_HOUR` is out of 0–23, `TRUSTED_PROXIES` is malformed or `0.0.0.0/0`, production cookies lack Supabase, only one of `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` is set, a Gemini timeout is set below 5 seconds, `GEMINI_TOTAL_TIMEOUT_SECONDS` is below the idle timeout, or `GEMINI_TOTAL_TIMEOUT_SECONDS` exceeds `ASK_TIMEOUT_SECONDS`. Locally, missing Supabase logs a warning that disk storage is ephemeral on Render.
 
 ### Vercel (`doctalk-client`)
 
