@@ -52,9 +52,6 @@ func (s *server) ingestDocument(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid document_id"})
 		return
 	}
-	if s.rejectIfLimited(c, rateIngest) {
-		return
-	}
 	if s.embed == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "GEMINI_API_KEY is not configured"})
 		return
@@ -97,6 +94,17 @@ func (s *server) ingestDocument(c *gin.Context) {
 		return
 	}
 
+	res, rejected := s.reserveQuota(c, rateIngest)
+	if rejected {
+		return
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			res.release()
+		}
+	}()
+
 	mapJSON, _ := json.Marshal(req.Columns)
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE documents SET sheet_name=$2, column_map=$3, status=$4, error_message=NULL, updated_at=now()
@@ -116,9 +124,11 @@ func (s *server) ingestDocument(c *gin.Context) {
 
 	doc, err = s.loadDocument(ctx, id, guest)
 	if err != nil {
+		keep = true
 		c.JSON(http.StatusAccepted, gin.H{"id": id, "status": statusExtracting})
 		return
 	}
+	keep = true
 	c.JSON(http.StatusAccepted, doc)
 }
 

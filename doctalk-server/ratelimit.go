@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"log"
 	"strconv"
 	"sync"
 	"time"
@@ -22,9 +24,19 @@ type rateLimiter struct {
 	loc         *time.Location
 	resetHour   int
 	quizLimit   int
+	quizIPLimit int
 	askLimit    int
 	ingestLimit int
 	hits        map[string][]time.Time
+}
+
+type quotaReservation struct {
+	kind      rateKind
+	guest     string
+	ip        string
+	now       time.Time
+	quizHitID int64
+	s         *server
 }
 
 func bangkokTZ() *time.Location {
@@ -48,6 +60,10 @@ func newRateLimiter(cfg config) *rateLimiter {
 	if ingest < 1 {
 		ingest = defaultIngestPerMinute
 	}
+	quizIP := cfg.QuizIPPerDay
+	if quizIP < 1 {
+		quizIP = defaultQuizIPPerDay
+	}
 	hour := cfg.QuizResetHour
 	if hour < 0 || hour > 23 {
 		hour = defaultQuizResetHour
@@ -57,6 +73,7 @@ func newRateLimiter(cfg config) *rateLimiter {
 		loc:         bangkokTZ(),
 		resetHour:   hour,
 		quizLimit:   quiz,
+		quizIPLimit: quizIP,
 		askLimit:    ask,
 		ingestLimit: ingest,
 		hits:        map[string][]time.Time{},
@@ -93,6 +110,15 @@ func (l *rateLimiter) peekLocked(kind rateKind, guest, ip string, now time.Time)
 	limit = l.limit(kind)
 	gUsed, gRetry := l.countLocked(l.key(kind, "g", guest), kind, now)
 	iUsed, iRetry := l.countLocked(l.key(kind, "ip", ip), kind, now)
+	if kind == rateQuiz {
+		if gUsed >= l.quizLimit {
+			return gUsed, l.quizLimit, gRetry
+		}
+		if iUsed >= l.quizIPLimit {
+			return iUsed, l.quizIPLimit, iRetry
+		}
+		return gUsed, l.quizLimit, gRetry
+	}
 	used = gUsed
 	retry = gRetry
 	if iUsed > used {
@@ -111,6 +137,22 @@ func (l *rateLimiter) recordLocked(kind rateKind, guest, ip string, now time.Tim
 		k := l.key(kind, "ip", ip)
 		l.hits[k] = append(l.hits[k], now)
 	}
+}
+
+func (l *rateLimiter) unrecordLocked(kind rateKind, guest, ip string) {
+	drop := func(scope, id string) {
+		if id == "" {
+			return
+		}
+		k := l.key(kind, scope, id)
+		hits := l.hits[k]
+		if len(hits) == 0 {
+			return
+		}
+		l.hits[k] = hits[:len(hits)-1]
+	}
+	drop("g", guest)
+	drop("ip", ip)
 }
 
 func (l *rateLimiter) countLocked(key string, kind rateKind, now time.Time) (used, retry int) {
@@ -157,18 +199,145 @@ func (l *rateLimiter) key(kind rateKind, scope, id string) string {
 	return string(kind) + ":" + scope + ":" + id
 }
 
-func (s *server) rejectIfLimited(c *gin.Context, kind rateKind) bool {
-	if s.limits == nil {
-		return false
-	}
-	now := s.limits.now()
-	retry, ok := s.limits.allow(kind, guestIDFrom(c), c.ClientIP(), now)
-	if ok {
-		return false
+func write429(c *gin.Context, retry int) {
+	if retry < 1 {
+		retry = 1
 	}
 	c.Header("Retry-After", strconv.Itoa(retry))
 	c.JSON(429, gin.H{"error": "rate limit exceeded"})
-	return true
+}
+
+func (r *quotaReservation) release() {
+	if r == nil || r.s == nil || r.s.limits == nil {
+		return
+	}
+	r.s.limits.mu.Lock()
+	r.s.limits.unrecordLocked(r.kind, r.guest, r.ip)
+	r.s.limits.mu.Unlock()
+	if r.quizHitID > 0 && r.s.db != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_, _ = r.s.db.ExecContext(ctx, `DELETE FROM quiz_quota_hits WHERE id=$1`, r.quizHitID)
+		cancel()
+	}
+}
+
+func (s *server) reserveQuota(c *gin.Context, kind rateKind) (res *quotaReservation, rejected bool) {
+	if s.limits == nil {
+		return nil, false
+	}
+	now := s.limits.now()
+	guest := guestIDFrom(c)
+	ip := c.ClientIP()
+	retry, ok := s.peekQuota(c.Request.Context(), kind, guest, ip, now)
+	if !ok {
+		write429(c, retry)
+		return nil, true
+	}
+	res, retry, ok = s.commitQuota(c.Request.Context(), kind, guest, ip, now)
+	if !ok {
+		write429(c, retry)
+		return nil, true
+	}
+	return res, false
+}
+
+func (s *server) peekQuota(ctx context.Context, kind rateKind, guest, ip string, now time.Time) (retry int, ok bool) {
+	l := s.limits
+	l.mu.Lock()
+	used, limit, retry := l.peekLocked(kind, guest, ip, now)
+	l.mu.Unlock()
+	if used >= limit {
+		return retry, false
+	}
+	if kind != rateQuiz {
+		return 0, true
+	}
+	gUsed, gRetry, err := s.quizGuestUsed(ctx, guest, now)
+	if err != nil {
+		log.Printf("quiz quota peek: %v", err)
+		return 1, false
+	}
+	if gUsed >= l.quizLimit {
+		return gRetry, false
+	}
+	return 0, true
+}
+
+func (s *server) commitQuota(ctx context.Context, kind rateKind, guest, ip string, now time.Time) (*quotaReservation, int, bool) {
+	res := &quotaReservation{kind: kind, guest: guest, ip: ip, now: now, s: s}
+	if kind == rateQuiz && s.db != nil {
+		id, retry, ok, err := s.insertQuizHit(ctx, guest, now)
+		if err != nil {
+			log.Printf("quiz quota reserve: %v", err)
+			return nil, 1, false
+		}
+		if !ok {
+			return nil, retry, false
+		}
+		res.quizHitID = id
+	}
+	s.limits.mu.Lock()
+	s.limits.recordLocked(kind, guest, ip, now)
+	s.limits.mu.Unlock()
+	return res, 0, true
+}
+
+func (s *server) quizGuestUsed(ctx context.Context, guest string, now time.Time) (used, retry int, err error) {
+	if s.limits == nil {
+		return 0, 1, nil
+	}
+	start := quizWindowStart(now, s.limits.loc, s.limits.resetHour)
+	resetAt := start.Add(24 * time.Hour)
+	retry = int(resetAt.Sub(now).Seconds())
+	if retry < 1 {
+		retry = 1
+	}
+	if s.db == nil {
+		s.limits.mu.Lock()
+		used, _ = s.limits.countLocked(s.limits.key(rateQuiz, "g", guest), rateQuiz, now)
+		s.limits.mu.Unlock()
+		return used, retry, nil
+	}
+	err = s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM quiz_quota_hits
+		WHERE guest_id=$1 AND hit_at >= $2
+	`, guest, start).Scan(&used)
+	return used, retry, err
+}
+
+func (s *server) insertQuizHit(ctx context.Context, guest string, now time.Time) (id int64, retry int, ok bool, err error) {
+	start := quizWindowStart(now, s.limits.loc, s.limits.resetHour)
+	resetAt := start.Add(24 * time.Hour)
+	retry = int(resetAt.Sub(now).Seconds())
+	if retry < 1 {
+		retry = 1
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, retry, false, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "quiz:"+guest); err != nil {
+		return 0, retry, false, err
+	}
+	var used int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM quiz_quota_hits WHERE guest_id=$1 AND hit_at >= $2
+	`, guest, start).Scan(&used); err != nil {
+		return 0, retry, false, err
+	}
+	if used >= s.limits.quizLimit {
+		return 0, retry, false, nil
+	}
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO quiz_quota_hits (guest_id, hit_at) VALUES ($1, $2) RETURNING id
+	`, guest, now).Scan(&id); err != nil {
+		return 0, retry, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, retry, false, err
+	}
+	return id, 0, true, nil
 }
 
 type quotaBucketJSON struct {
@@ -195,19 +364,31 @@ func (s *server) getQuota(c *gin.Context) {
 	ip := c.ClientIP()
 	quizStart := quizWindowStart(now, s.limits.loc, s.limits.resetHour)
 	c.JSON(200, quotaJSON{
-		Quiz:   s.quotaBucket(rateQuiz, guest, ip, now, quizStart.Add(24*time.Hour).UTC().Format(time.RFC3339)),
-		Ask:    s.quotaBucket(rateAsk, guest, ip, now, ""),
-		Ingest: s.quotaBucket(rateIngest, guest, ip, now, ""),
+		Quiz:   s.quizQuotaBucket(c.Request.Context(), guest, now, quizStart.Add(24*time.Hour).UTC().Format(time.RFC3339)),
+		Ask:    s.memQuotaBucket(rateAsk, guest, ip, now, ""),
+		Ingest: s.memQuotaBucket(rateIngest, guest, ip, now, ""),
 	})
 }
 
-func (s *server) quotaBucket(kind rateKind, guest, ip string, now time.Time, resetAt string) quotaBucketJSON {
+func (s *server) quizQuotaBucket(ctx context.Context, guest string, now time.Time, resetAt string) quotaBucketJSON {
+	limit := s.limits.quizLimit
+	used, retry, err := s.quizGuestUsed(ctx, guest, now)
+	if err != nil {
+		log.Printf("quota: %v", err)
+	}
+	if used > limit {
+		used = limit
+	}
+	return quotaBucketJSON{Used: used, Remaining: limit - used, Limit: limit, ResetAt: resetAt, RetryAfter: retry}
+}
+
+func (s *server) memQuotaBucket(kind rateKind, guest, ip string, now time.Time, resetAt string) quotaBucketJSON {
 	used, limit, retry := s.limits.snapshot(kind, guest, ip, now)
 	if used > limit {
 		used = limit
 	}
 	b := quotaBucketJSON{Used: used, Remaining: limit - used, Limit: limit, RetryAfter: retry}
-	if kind == rateQuiz {
+	if resetAt != "" {
 		b.ResetAt = resetAt
 	}
 	return b

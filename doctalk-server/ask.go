@@ -86,9 +86,6 @@ func (s *server) ask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": kerr})
 		return
 	}
-	if s.rejectIfLimited(c, rateAsk) {
-		return
-	}
 	if s.embed == nil || s.chat == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "GEMINI_API_KEY is not configured"})
 		return
@@ -128,6 +125,17 @@ func (s *server) ask(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load documents"})
 		return
 	}
+
+	res, rejected := s.reserveQuota(c, rateAsk)
+	if rejected {
+		return
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			res.release()
+		}
+	}()
 
 	s.startSSE(c)
 
@@ -179,6 +187,7 @@ func (s *server) ask(c *gin.Context) {
 		citations = []citationJSON{}
 	}
 	_ = writeSSE(c.Writer, "final", finalEvent{Citations: citations})
+	keep = true
 }
 
 func (s *server) startSSE(c *gin.Context) {

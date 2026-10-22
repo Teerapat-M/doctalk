@@ -63,6 +63,15 @@ func TestCORSAllowsLocalhostAndLoopback(t *testing.T) {
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
 		t.Fatalf("unexpected allow=%q", got)
 	}
+
+	wild := newRouter(&server{ping: fakePinger{}, cfg: config{CORSOrigin: "*"}})
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodOptions, "/health", nil)
+	req.Header.Set("Origin", "http://localhost:3917")
+	wild.ServeHTTP(w, req)
+	if got := w.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Fatalf("wildcard must not set credentials, got %q", got)
+	}
 }
 
 func TestHealthUnhealthyWhenDBFails(t *testing.T) {

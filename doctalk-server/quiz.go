@@ -91,9 +91,6 @@ func (s *server) generateQuiz(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "mode must be generate or from_columns"})
 		return
 	}
-	if s.rejectIfLimited(c, rateQuiz) {
-		return
-	}
 	if mode == "generate" && s.quiz == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "GEMINI_API_KEY is not configured"})
 		return
@@ -137,6 +134,17 @@ func (s *server) generateQuiz(c *gin.Context) {
 		return
 	}
 
+	res, rejected := s.reserveQuota(c, rateQuiz)
+	if rejected {
+		return
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			res.release()
+		}
+	}()
+
 	var questions []quizQuestionJSON
 	switch mode {
 	case "from_columns":
@@ -153,6 +161,7 @@ func (s *server) generateQuiz(c *gin.Context) {
 			return
 		}
 	}
+	keep = true
 	c.JSON(http.StatusOK, quizResponse{Questions: questions})
 }
 

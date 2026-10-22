@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -26,7 +27,7 @@ func TestQuizWindowStartBangkokBoundary(t *testing.T) {
 }
 
 func TestQuizLimiterResetsAtBangkok0700(t *testing.T) {
-	l := newRateLimiter(config{QuizPerDay: 5, AskPerMinute: 20, IngestPerMinute: 10, QuizResetHour: 7})
+	l := newRateLimiter(config{QuizPerDay: 5, QuizIPPerDay: 20, AskPerMinute: 20, IngestPerMinute: 10, QuizResetHour: 7})
 	loc := l.loc
 	now := time.Date(2026, 10, 22, 6, 30, 0, 0, loc)
 	for i := 0; i < 5; i++ {
@@ -44,7 +45,7 @@ func TestQuizLimiterResetsAtBangkok0700(t *testing.T) {
 }
 
 func TestLimiterGuestAndIPIndependentKeys(t *testing.T) {
-	l := newRateLimiter(config{QuizPerDay: 1, AskPerMinute: 1, IngestPerMinute: 1, QuizResetHour: 7})
+	l := newRateLimiter(config{QuizPerDay: 1, QuizIPPerDay: 20, AskPerMinute: 1, IngestPerMinute: 1, QuizResetHour: 7})
 	now := time.Date(2026, 10, 22, 10, 0, 0, 0, l.loc)
 	if _, ok := l.allow(rateAsk, "g1", "10.0.0.1", now); !ok {
 		t.Fatal("first ask")
@@ -61,12 +62,25 @@ func TestLimiterGuestAndIPIndependentKeys(t *testing.T) {
 }
 
 func TestAskReturnsJSON429BeforeSSE(t *testing.T) {
-	cfg := config{CORSOrigin: "*", AskPerMinute: 1, QuizPerDay: 5, IngestPerMinute: 10, QuizResetHour: 7}
-	r := newRouter(&server{cfg: cfg, limits: newRateLimiter(cfg)})
-	body := `{"question":"hi","document_ids":["00000000-0000-0000-0000-000000000001"]}`
+	db := openTestDB(t)
+	id := insertDoneDoc(t, db, "ask429.pdf")
+	insertChunk(t, db, id, 0, 1, "Embeddings are 768 dimensional vectors.", unitVec(0))
+	cfg := config{CORSOrigin: "*", AskPerMinute: 1, QuizPerDay: 5, QuizIPPerDay: 20, IngestPerMinute: 10, QuizResetHour: 7, AskTopK: 5, AskTopKMax: 20, AskTimeout: time.Minute}
+	s := &server{
+		db:     db,
+		cfg:    cfg,
+		limits: newRateLimiter(cfg),
+		embed:  &fakeEmbedder{query: unitVec(0)},
+		chat:   &fakeChat{deltas: []string{"768"}},
+	}
+	r := newRouter(s)
+	body := `{"question":"What dim?","document_ids":["` + id + `"]}`
 	first := postAsk(r, body)
-	if first.Code == http.StatusTooManyRequests {
-		t.Fatalf("first ask should not 429, got %d %s", first.Code, first.Body.String())
+	if first.Code != http.StatusOK {
+		t.Fatalf("first ask status=%d body=%s", first.Code, first.Body.String())
+	}
+	if ct := first.Header().Get("Content-Type"); !strings.Contains(ct, "event-stream") {
+		t.Fatalf("first content-type=%s", ct)
 	}
 	w := postAsk(r, body)
 	if w.Code != http.StatusTooManyRequests {
@@ -92,35 +106,105 @@ func TestAskReturnsJSON429BeforeSSE(t *testing.T) {
 	}
 }
 
-func TestQuizAndQuota429Shape(t *testing.T) {
-	cfg := config{CORSOrigin: "*", AskPerMinute: 20, QuizPerDay: 1, IngestPerMinute: 10, QuizResetHour: 7}
-	s := &server{cfg: cfg, limits: newRateLimiter(cfg)}
+func TestQuotaNotChargedOnValidationOrUpstreamFailure(t *testing.T) {
+	db := openTestDB(t)
+	id := insertDoneDoc(t, db, "askfail.pdf")
+	insertChunk(t, db, id, 0, 1, "hello", unitVec(0))
+	cfg := config{CORSOrigin: "*", AskPerMinute: 1, QuizPerDay: 5, QuizIPPerDay: 20, AskTopK: 5, AskTopKMax: 20, AskTimeout: time.Minute}
+	s := &server{
+		db:     db,
+		cfg:    cfg,
+		limits: newRateLimiter(cfg),
+		embed:  &fakeEmbedder{query: unitVec(0)},
+		chat:   &fakeChat{err: errString("gemini chat: HTTP 503 UNAVAILABLE")},
+	}
 	r := newRouter(s)
-	body := `{"document_ids":["00000000-0000-0000-0000-000000000001"],"n":1,"mode":"from_columns"}`
-	postQuiz := func() *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/quiz", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
-		return w
+
+	bad := postAsk(r, `{"question":"","document_ids":["`+id+`"]}`)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("validation status=%d body=%s", bad.Code, bad.Body.String())
 	}
-	_ = postQuiz()
-	w := postQuiz()
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("quiz status=%d body=%s", w.Code, w.Body.String())
-	}
-	if w.Header().Get("Retry-After") == "" {
-		t.Fatal("missing Retry-After")
-	}
-	var payload struct {
-		Error string `json:"error"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil || payload.Error == "" {
-		t.Fatalf("429 json=%s", w.Body.String())
+	missing := postAsk(r, `{"question":"hi","document_ids":["00000000-0000-0000-0000-000000000099"]}`)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing doc status=%d body=%s", missing.Code, missing.Body.String())
 	}
 
-	qw := httptest.NewRecorder()
-	r.ServeHTTP(qw, httptest.NewRequest(http.MethodGet, "/quota", nil))
+	fail := postAsk(r, `{"question":"hi","document_ids":["`+id+`"]}`)
+	if fail.Code != http.StatusOK {
+		t.Fatalf("upstream status=%d body=%s", fail.Code, fail.Body.String())
+	}
+	events := parseTestSSE(t, fail.Body.String())
+	if events.err == "" {
+		t.Fatalf("expected SSE error, body=%s", fail.Body.String())
+	}
+
+	s.chat = &fakeChat{deltas: []string{"ok"}}
+	ok := postAsk(r, `{"question":"hi","document_ids":["`+id+`"]}`)
+	if ok.Code != http.StatusOK {
+		t.Fatalf("retry after upstream fail status=%d body=%s", ok.Code, ok.Body.String())
+	}
+	if !strings.Contains(ok.Header().Get("Content-Type"), "event-stream") {
+		t.Fatalf("content-type=%s", ok.Header().Get("Content-Type"))
+	}
+	limited := postAsk(r, `{"question":"hi","document_ids":["`+id+`"]}`)
+	if limited.Code != http.StatusTooManyRequests {
+		t.Fatalf("after success status=%d body=%s", limited.Code, limited.Body.String())
+	}
+}
+
+func TestQuizQuotaIsolatedPerGuestAndPersists(t *testing.T) {
+	db := openTestDB(t)
+	const secret = "isolate-quiz-secret-not-for-prod"
+	cfg := config{
+		CORSOrigin:      "*",
+		JWTSecret:       secret,
+		GuestTTL:        24 * time.Hour,
+		QuizPerDay:      1,
+		QuizIPPerDay:    20,
+		AskPerMinute:    20,
+		IngestPerMinute: 10,
+		QuizNMax:        20,
+		AskTimeout:      time.Minute,
+	}
+	s := &server{
+		db:     db,
+		cfg:    cfg,
+		limits: newRateLimiter(cfg),
+		embed:  &fakeEmbedder{},
+		quiz:   &fakeQuiz{bodies: [][]byte{quizJSONFixture(t, 1, 1), quizJSONFixture(t, 1, 1)}},
+	}
+	r := newRouter(s)
+	a, b := &testJar{}, &testJar{}
+	a.do(r, httptest.NewRequest(http.MethodGet, "/quota", nil))
+	b.do(r, httptest.NewRequest(http.MethodGet, "/quota", nil))
+	guestA, err := parseGuestJWT(secret, a.cookie.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guestB, err := parseGuestJWT(secret, b.cookie.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idA := insertGuestQuizDoc(t, db, "qa.xlsx", guestA)
+	idB := insertGuestQuizDoc(t, db, "qb.xlsx", guestB)
+
+	post := func(j *testJar, id string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/quiz", strings.NewReader(`{"document_ids":["`+id+`"],"n":1,"mode":"generate"}`))
+		req.Header.Set("Content-Type", "application/json")
+		return j.do(r, req)
+	}
+	if w := post(a, idA); w.Code != http.StatusOK {
+		t.Fatalf("guest A first=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := post(b, idB); w.Code != http.StatusOK {
+		t.Fatalf("guest B first=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := post(a, idA); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("guest A second=%d body=%s", w.Code, w.Body.String())
+	}
+
+	s.limits = newRateLimiter(cfg)
+	qw := a.do(r, httptest.NewRequest(http.MethodGet, "/quota", nil))
 	if qw.Code != http.StatusOK {
 		t.Fatalf("quota status=%d", qw.Code)
 	}
@@ -128,10 +212,54 @@ func TestQuizAndQuota429Shape(t *testing.T) {
 	if err := json.Unmarshal(qw.Body.Bytes(), &quota); err != nil {
 		t.Fatal(err)
 	}
-	if quota.Quiz.Limit != 1 || quota.Quiz.Remaining != 0 || quota.Quiz.Used != 1 {
-		t.Fatalf("quiz quota=%+v", quota.Quiz)
+	if quota.Quiz.Limit != 1 || quota.Quiz.Used != 1 || quota.Quiz.Remaining != 0 {
+		t.Fatalf("persisted quiz quota=%+v", quota.Quiz)
 	}
 	if quota.Quiz.ResetAt == "" {
 		t.Fatal("quiz reset_at missing")
 	}
+}
+
+func TestQuizNotChargedOnUpstreamFailure(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.Exec(`DELETE FROM quiz_quota_hits`); err != nil {
+		t.Fatal(err)
+	}
+	id := insertDoneDoc(t, db, "quizfail.pdf")
+	insertChunk(t, db, id, 0, 1, "hello", unitVec(0))
+	cfg := config{CORSOrigin: "*", QuizPerDay: 1, QuizIPPerDay: 20, QuizNMax: 20, AskTimeout: time.Minute}
+	s := &server{
+		db:     db,
+		cfg:    cfg,
+		limits: newRateLimiter(cfg),
+		quiz:   &fakeQuiz{errs: []error{errString("gemini quiz: HTTP 503 UNAVAILABLE")}},
+	}
+	r := newRouter(s)
+	body := `{"document_ids":["` + id + `"],"n":1,"mode":"generate"}`
+	req := httptest.NewRequest(http.MethodPost, "/quiz", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	s.quiz = &fakeQuiz{bodies: [][]byte{quizJSONFixture(t, 1, 1)}}
+	req = httptest.NewRequest(http.MethodPost, "/quiz", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("retry status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func insertGuestQuizDoc(t *testing.T, db *sql.DB, filename, guest string) string {
+	t.Helper()
+	id := insertDoneDoc(t, db, filename)
+	if _, err := db.Exec(`UPDATE documents SET guest_id=$2 WHERE id=$1`, id, guest); err != nil {
+		t.Fatal(err)
+	}
+	insertChunk(t, db, id, 0, 1, "Embeddings are 768 dimensional vectors.", unitVec(0))
+	return id
 }

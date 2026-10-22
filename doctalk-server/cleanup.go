@@ -15,10 +15,13 @@ func (s *server) cleanupExpiredGuests(ctx context.Context) (int, error) {
 	if ttl < time.Hour {
 		ttl = defaultGuestTTL
 	}
+	interval := formatInterval(ttl)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id::text, storage_key FROM documents
-		WHERE guest_id <> '' AND created_at < now() - ($1::text)::interval
-	`, formatInterval(ttl))
+		SELECT d.id::text, d.storage_key FROM documents d
+		LEFT JOIN guests g ON g.id = d.guest_id
+		WHERE d.guest_id <> ''
+		  AND COALESCE(g.last_seen, d.created_at) < now() - ($1::text)::interval
+	`, interval)
 	if err != nil {
 		return 0, err
 	}
@@ -43,6 +46,20 @@ func (s *server) cleanupExpiredGuests(ctx context.Context) (int, error) {
 			return 0, err
 		}
 	}
+	if _, err := s.db.ExecContext(ctx, `
+		DELETE FROM quiz_quota_hits
+		WHERE guest_id IN (
+			SELECT g.id FROM guests g
+			WHERE g.last_seen < now() - ($1::text)::interval
+		)
+	`, interval); err != nil {
+		return 0, err
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		DELETE FROM guests WHERE last_seen < now() - ($1::text)::interval
+	`, interval); err != nil {
+		return 0, err
+	}
 	return len(doomed), nil
 }
 
@@ -59,17 +76,22 @@ func (s *server) startGuestCleanup() {
 		return
 	}
 	go func() {
+		s.runGuestCleanup()
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
 		for range t.C {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			n, err := s.cleanupExpiredGuests(ctx)
-			cancel()
-			if err != nil {
-				log.Printf("guest cleanup: %v", err)
-			} else if n > 0 {
-				log.Printf("guest cleanup: removed %d documents", n)
-			}
+			s.runGuestCleanup()
 		}
 	}()
+}
+
+func (s *server) runGuestCleanup() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	n, err := s.cleanupExpiredGuests(ctx)
+	if err != nil {
+		log.Printf("guest cleanup: %v", err)
+	} else if n > 0 {
+		log.Printf("guest cleanup: removed %d documents", n)
+	}
 }

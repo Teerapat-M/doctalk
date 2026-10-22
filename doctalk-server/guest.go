@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -125,16 +127,38 @@ func guestMiddleware(s *server) gin.HandlerFunc {
 		}
 		token, err := signGuestJWT(secret, id, time.Now().Add(ttl))
 		if err == nil {
+			sameSite := s.cfg.CookieSameSite
+			if sameSite == 0 {
+				sameSite = http.SameSiteLaxMode
+			}
+			secure := s.cfg.CookieSecure
+			if sameSite == http.SameSiteNoneMode {
+				secure = true
+			}
 			http.SetCookie(c.Writer, &http.Cookie{
 				Name:     guestCookieName,
 				Value:    token,
 				Path:     "/",
 				MaxAge:   int(ttl.Seconds()),
 				HttpOnly: true,
-				SameSite: http.SameSiteLaxMode,
+				Secure:   secure,
+				SameSite: sameSite,
 			})
 		}
 		c.Set("guestID", id)
+		s.touchGuest(c.Request.Context(), id)
 		c.Next()
+	}
+}
+
+func (s *server) touchGuest(ctx context.Context, id string) {
+	if s.db == nil || id == "" {
+		return
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO guests (id, last_seen) VALUES ($1, now())
+		ON CONFLICT (id) DO UPDATE SET last_seen = now()
+	`, id); err != nil {
+		log.Printf("guest last_seen: %v", err)
 	}
 }

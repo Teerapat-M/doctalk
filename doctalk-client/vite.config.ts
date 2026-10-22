@@ -8,7 +8,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const defaultVitePort = 3917;
 
 function strictPortMessage(port: number): Plugin {
-  const msg = `Vite port ${port} is already in use. Set VITE_PORT to a free port (default ${defaultVitePort}; 5173/5174/5191 collide on the owner's PC).`;
+  const msg = `Vite port ${port} is already in use. Set VITE_PORT to a free port (default ${defaultVitePort}; 5173/5174/5191/4317 collide on the owner's PC) and set CORS_ORIGIN to http://localhost:<port>,http://127.0.0.1:<port>.`;
   const attach = (server: ViteDevServer) => {
     server.httpServer?.on("error", (err: NodeJS.ErrnoException) => {
       if (err.code === "EADDRINUSE") {

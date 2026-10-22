@@ -166,23 +166,36 @@ The client quiz UI picks a source and question count, shows A–D, has a global 
 
 ## Phase 5 — guest auth and rate limiting
 
-Anonymous guests get an HS256 JWT in the httpOnly `dt_guest` cookie, signed with `JWT_SECRET`. Documents are scoped to that guest id. Leave `JWT_SECRET` unset only in tests; local `.env` uses the placeholder `change-me` — never commit a real secret.
+Anonymous guests get an HS256 JWT in the httpOnly `dt_guest` cookie, signed with `JWT_SECRET`. Documents are scoped to that guest id. The server **refuses to start** if `JWT_SECRET` is missing or shorter than 32 bytes.
 
-`GET /quota` returns used/remaining/limit for quiz, ask, and ingest. The quiz quota-reached frame reads that payload. Limits are per guest **and** per IP, configurable via env:
+Generate a local secret (never commit the real value):
+
+```
+openssl rand -base64 32
+```
+
+Windows cmd.exe: `openssl rand -base64 32` then `set JWT_SECRET=...`
+
+Cookie flags: `COOKIE_SAMESITE` (default `Lax`) and `COOKIE_SECURE` (default false) for local Vite on the same site. For a Vercel client talking to Render, set `COOKIE_SAMESITE=None` and `COOKIE_SECURE=true`. The client sends `credentials: "include"`. `CORS_ORIGIN` is an explicit allowlist (both `localhost` and `127.0.0.1`); it never pairs `*` with `Allow-Credentials`.
+
+`GET /quota` returns used/remaining/limit for quiz, ask, and ingest. The quiz quota-reached frame reads that payload. Daily quiz quota is stored in Postgres per guest (survives restarts) and resets at `QUIZ_RESET_HOUR` (7) in **Asia/Bangkok**. Per-IP quiz hits are a looser in-memory abuse cap (`QUIZ_IP_PER_DAY`). Ask and ingest per-minute caps stay in memory. A request is counted only after it passes validation; upstream Gemini failures are not charged.
 
 | Env | Default |
 | --- | --- |
 | `QUIZ_PER_DAY` | 5, window resets at `QUIZ_RESET_HOUR` (7) in **Asia/Bangkok** |
+| `QUIZ_IP_PER_DAY` | 20 (loose per-IP abuse cap) |
 | `ASK_PER_MINUTE` | 20 |
 | `INGEST_PER_MINUTE` | 10 |
 | `MAX_UPLOAD_BYTES` | 10485760 (10 MiB) |
 | `MAX_PAGES` | 50 |
 | `MAX_ROWS` | 2000 |
-| `GUEST_TTL_HOURS` | 168 (expired guest docs are deleted on an hourly cleanup) |
+| `GUEST_TTL_HOURS` | 168 (first sweep at startup, then hourly; expired by `last_seen`) |
+| `COOKIE_SAMESITE` | `Lax` (`None` requires Secure, for Vercel → Render) |
+| `COOKIE_SECURE` | false locally; true with `SameSite=None` |
 
 Over quota, `/ask`, `/quiz`, and ingest return **429** with `Retry-After` and `{"error":"..."}`. `/ask` does this as JSON **before** the SSE stream starts.
 
-The Vite default port is **3917** (`strictPort`) because 4317 is taken on the owner's PC. `CORS_ORIGIN` allows both `http://localhost:3917` and `http://127.0.0.1:3917`, with credentials.
+The Vite default port is **3917** (`strictPort`) because 4317 is taken on the owner's PC. If 3917 is busy, set `VITE_PORT` to a free port **and** set `CORS_ORIGIN` to both hostnames on that port, for example `http://localhost:3920,http://127.0.0.1:3920`.
 
 ### Thai-aware chunking
 
@@ -202,9 +215,9 @@ Defaults avoid collisions with 5433 / 5173 / 8080 and with 8081 / 5174 / 5191 / 
 | API | `API_PORT` (then `PORT`) | 8181 |
 | Vite | `VITE_PORT` | 3917 (bound to `127.0.0.1`, `strictPort`) |
 | Browser → API | `VITE_API_URL` | unset (Vite proxies `/health`, `/documents`, `/ask`, `/quiz`, `/quota`) |
-| CORS | `CORS_ORIGIN` | `http://localhost:3917,http://127.0.0.1:3917` |
+| CORS | `CORS_ORIGIN` | `http://localhost:3917,http://127.0.0.1:3917` (must match `VITE_PORT` on both hostnames) |
 
-Inside docker-compose, Postgres is still 5432 on the private network. `DB_PORT` / `API_PORT` only change the **host** bindings. The server prefers `API_PORT`, then `PORT` (Render), then 8181. If Vite's port is taken, it exits with a message to set `VITE_PORT`.
+Inside docker-compose, Postgres is still 5432 on the private network. `DB_PORT` / `API_PORT` only change the **host** bindings. The server prefers `API_PORT`, then `PORT` (Render), then 8181. If Vite's port is taken, it exits with a message to set `VITE_PORT` and a matching `CORS_ORIGIN` for `localhost` and `127.0.0.1`.
 
 ## Setup
 
@@ -234,7 +247,7 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    set DATABASE_URL=postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable
    set API_PORT=8181
    set CORS_ORIGIN=http://localhost:3917,http://127.0.0.1:3917
-   set JWT_SECRET=change-me
+   set JWT_SECRET=replace-with-openssl-rand-base64-32
    set GEMINI_API_KEY=your-free-tier-key
    set GEMINI_BASE_URL=https://generativelanguage.googleapis.com
    set GEMINI_CHAT_MODEL=gemini-3.8-flash
@@ -248,7 +261,7 @@ Prerequisites: Go 1.22+, Node 22+, Docker (for Postgres).
    export DATABASE_URL=postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable
    export API_PORT=8181
    export CORS_ORIGIN=http://localhost:3917,http://127.0.0.1:3917
-   export JWT_SECRET=change-me
+   export JWT_SECRET=replace-with-openssl-rand-base64-32
    export GEMINI_API_KEY=your-free-tier-key
    export GEMINI_BASE_URL=https://generativelanguage.googleapis.com
    export GEMINI_CHAT_MODEL=gemini-3.8-flash

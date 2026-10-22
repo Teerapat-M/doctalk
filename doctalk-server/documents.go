@@ -95,9 +95,6 @@ func (s *server) uploadDocument(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "server is not configured"})
 		return
 	}
-	if s.rejectIfLimited(c, rateIngest) {
-		return
-	}
 
 	if filename == "" || filename == "." || filename == string(filepath.Separator) {
 		filename = "upload." + kind
@@ -118,6 +115,17 @@ func (s *server) uploadDocument(c *gin.Context) {
 		sheets = parsed
 		status = statusMapping
 	}
+
+	res, rejected := s.reserveQuota(c, rateIngest)
+	if rejected {
+		return
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			res.release()
+		}
+	}()
 
 	ctx := c.Request.Context()
 	var id string
@@ -149,9 +157,11 @@ func (s *server) uploadDocument(c *gin.Context) {
 
 	doc, err := s.loadDocument(ctx, id, guestIDFrom(c))
 	if err != nil {
+		keep = true
 		c.JSON(http.StatusAccepted, gin.H{"id": id, "status": status})
 		return
 	}
+	keep = true
 	c.JSON(http.StatusAccepted, doc)
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -38,10 +39,12 @@ const (
 	defaultQuizPerDay        = 5
 	defaultAskPerMinute      = 20
 	defaultIngestPerMinute   = 10
+	defaultQuizIPPerDay      = 20
 	defaultQuizResetHour     = 7
 	defaultGuestTTL          = 7 * 24 * time.Hour
 	defaultMaxPages          = 50
 	defaultMaxRows           = 2000
+	minJWTSecretBytes        = 32
 )
 
 type config struct {
@@ -70,8 +73,11 @@ type config struct {
 	QuizPerDay              int
 	AskPerMinute            int
 	IngestPerMinute         int
+	QuizIPPerDay            int
 	QuizResetHour           int
 	GuestTTL                time.Duration
+	CookieSecure            bool
+	CookieSameSite          http.SameSite
 }
 
 func loadConfig() (config, error) {
@@ -101,11 +107,17 @@ func loadConfig() (config, error) {
 		QuizPerDay:              getenvInt("QUIZ_PER_DAY", defaultQuizPerDay),
 		AskPerMinute:            getenvInt("ASK_PER_MINUTE", defaultAskPerMinute),
 		IngestPerMinute:         getenvInt("INGEST_PER_MINUTE", defaultIngestPerMinute),
+		QuizIPPerDay:            getenvInt("QUIZ_IP_PER_DAY", defaultQuizIPPerDay),
 		QuizResetHour:           getenvInt("QUIZ_RESET_HOUR", defaultQuizResetHour),
 		GuestTTL:                time.Duration(getenvInt("GUEST_TTL_HOURS", int(defaultGuestTTL/time.Hour))) * time.Hour,
+		CookieSecure:            getenvBool("COOKIE_SECURE", false),
+		CookieSameSite:          parseCookieSameSite(os.Getenv("COOKIE_SAMESITE")),
 	}
 	if cfg.DatabaseURL == "" {
 		return config{}, fmt.Errorf("DATABASE_URL is required")
+	}
+	if len(cfg.JWTSecret) < minJWTSecretBytes {
+		return config{}, fmt.Errorf("JWT_SECRET must be at least %d bytes", minJWTSecretBytes)
 	}
 	if cfg.GeminiEmbedBatch < 1 {
 		cfg.GeminiEmbedBatch = defaultEmbedBatch
@@ -158,6 +170,12 @@ func loadConfig() (config, error) {
 	if cfg.IngestPerMinute < 1 {
 		cfg.IngestPerMinute = defaultIngestPerMinute
 	}
+	if cfg.QuizIPPerDay < 1 {
+		cfg.QuizIPPerDay = defaultQuizIPPerDay
+	}
+	if cfg.CookieSameSite == http.SameSiteNoneMode {
+		cfg.CookieSecure = true
+	}
 	if cfg.QuizResetHour < 0 || cfg.QuizResetHour > 23 {
 		cfg.QuizResetHour = defaultQuizResetHour
 	}
@@ -204,6 +222,29 @@ func getenvInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func getenvBool(key string, fallback bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func parseCookieSameSite(v string) http.SameSite {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "none":
+		return http.SameSiteNoneMode
+	case "strict":
+		return http.SameSiteStrictMode
+	default:
+		return http.SameSiteLaxMode
+	}
 }
 
 func getenvInt64(key string, fallback int64) int64 {

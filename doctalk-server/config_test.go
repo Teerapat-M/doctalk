@@ -1,10 +1,13 @@
 package main
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 )
+
+const testJWTSecret = "ci-dummy-jwt-secret-not-for-prod"
 
 func TestLoadConfigRequiresDatabaseURL(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
@@ -34,7 +37,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("GEMINI_MAX_IN_FLIGHT", "")
 	t.Setenv("GEMINI_RETRY_BUDGET_SECONDS", "")
 	t.Setenv("TRUSTED_PROXIES", "")
-	t.Setenv("JWT_SECRET", "")
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	t.Setenv("COOKIE_SECURE", "")
+	t.Setenv("COOKIE_SAMESITE", "")
 	t.Setenv("QUIZ_PER_DAY", "")
 	t.Setenv("ASK_PER_MINUTE", "")
 	t.Setenv("INGEST_PER_MINUTE", "")
@@ -88,8 +93,14 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.Port != "8181" {
 		t.Fatalf("default port=%q", cfg.Port)
 	}
-	if cfg.JWTSecret != "" {
-		t.Fatalf("JWTSecret should be empty, got %q", cfg.JWTSecret)
+	if cfg.JWTSecret != testJWTSecret {
+		t.Fatalf("JWTSecret = %q", cfg.JWTSecret)
+	}
+	if cfg.CookieSecure {
+		t.Fatal("CookieSecure should default false")
+	}
+	if cfg.CookieSameSite != http.SameSiteLaxMode {
+		t.Fatalf("CookieSameSite=%v want Lax", cfg.CookieSameSite)
 	}
 	if cfg.QuizPerDay != defaultQuizPerDay || cfg.AskPerMinute != defaultAskPerMinute || cfg.IngestPerMinute != defaultIngestPerMinute {
 		t.Fatalf("limits quiz=%d ask=%d ingest=%d", cfg.QuizPerDay, cfg.AskPerMinute, cfg.IngestPerMinute)
@@ -108,8 +119,38 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRequiresJWTSecret(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", "")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error when JWT_SECRET is empty")
+	}
+	t.Setenv("JWT_SECRET", "too-short")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("expected error when JWT_SECRET is shorter than 32 bytes")
+	}
+}
+
+func TestLoadConfigCookieNoneForcesSecure(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	t.Setenv("COOKIE_SAMESITE", "None")
+	t.Setenv("COOKIE_SECURE", "false")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CookieSameSite != http.SameSiteNoneMode {
+		t.Fatalf("SameSite=%v", cfg.CookieSameSite)
+	}
+	if !cfg.CookieSecure {
+		t.Fatal("SameSite=None must force Secure")
+	}
+}
+
 func TestLoadConfigQuizModelAndCap(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", testJWTSecret)
 	t.Setenv("GEMINI_CHAT_MODEL", "gemini-3.8-flash")
 	t.Setenv("GEMINI_QUIZ_MODEL", "gemini-quiz")
 	t.Setenv("QUIZ_N_MAX", "99")
@@ -127,6 +168,7 @@ func TestLoadConfigQuizModelAndCap(t *testing.T) {
 
 func TestLoadConfigGeminiBaseURL(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://doctalk:doctalk@localhost:5435/doctalk?sslmode=disable")
+	t.Setenv("JWT_SECRET", testJWTSecret)
 	t.Setenv("GEMINI_BASE_URL", "https://example.invalid/gemini/")
 	cfg, err := loadConfig()
 	if err != nil {
