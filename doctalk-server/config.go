@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // EmbeddingDim is the pgvector column size (migrations/0001_init.sql).
@@ -19,7 +20,14 @@ const (
 	defaultStorageDir    = "data/uploads"
 	defaultEmbedBatch    = 16
 	defaultEmbedModel    = "gemini-embedding-001"
+	defaultChatModel     = "gemini-3.8-flash"
 	defaultGeminiBaseURL = "https://generativelanguage.googleapis.com"
+	defaultAskTopK       = 5
+	defaultAskTopKMax    = 20
+	defaultAskTimeoutSec = 60
+	maxQuestionRunes     = 4000
+	maxAskDocumentIDs    = 32
+	citationSnippetRunes = 240
 )
 
 type config struct {
@@ -29,7 +37,11 @@ type config struct {
 	GeminiAPIKey         string
 	GeminiBaseURL        string
 	GeminiEmbeddingModel string
+	GeminiChatModel      string
 	GeminiEmbedBatch     int
+	AskTopK              int
+	AskTopKMax           int
+	AskTimeout           time.Duration
 	MaxUploadBytes       int64
 	StorageDir           string
 }
@@ -42,7 +54,11 @@ func loadConfig() (config, error) {
 		GeminiAPIKey:         os.Getenv("GEMINI_API_KEY"),
 		GeminiBaseURL:        strings.TrimRight(getenv("GEMINI_BASE_URL", defaultGeminiBaseURL), "/"),
 		GeminiEmbeddingModel: getenv("GEMINI_EMBEDDING_MODEL", defaultEmbedModel),
+		GeminiChatModel:      getenv("GEMINI_CHAT_MODEL", defaultChatModel),
 		GeminiEmbedBatch:     getenvInt("GEMINI_EMBED_BATCH", defaultEmbedBatch),
+		AskTopK:              getenvInt("ASK_TOP_K", defaultAskTopK),
+		AskTopKMax:           getenvInt("ASK_TOP_K_MAX", defaultAskTopKMax),
+		AskTimeout:           time.Duration(getenvInt("ASK_TIMEOUT_SECONDS", defaultAskTimeoutSec)) * time.Second,
 		MaxUploadBytes:       getenvInt64("MAX_UPLOAD_BYTES", defaultMaxUpload),
 		StorageDir:           getenv("STORAGE_DIR", defaultStorageDir),
 	}
@@ -57,6 +73,21 @@ func loadConfig() (config, error) {
 	}
 	if cfg.GeminiBaseURL == "" {
 		cfg.GeminiBaseURL = defaultGeminiBaseURL
+	}
+	if cfg.GeminiChatModel == "" {
+		cfg.GeminiChatModel = defaultChatModel
+	}
+	if cfg.AskTopKMax < 1 {
+		cfg.AskTopKMax = defaultAskTopKMax
+	}
+	if cfg.AskTopK < 1 {
+		cfg.AskTopK = defaultAskTopK
+	}
+	if cfg.AskTopK > cfg.AskTopKMax {
+		cfg.AskTopK = cfg.AskTopKMax
+	}
+	if cfg.AskTimeout < time.Second {
+		cfg.AskTimeout = time.Duration(defaultAskTimeoutSec) * time.Second
 	}
 	return cfg, nil
 }

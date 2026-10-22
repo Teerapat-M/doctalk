@@ -17,6 +17,7 @@ import (
 
 type Embedder interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
+	EmbedQuery(ctx context.Context, text string) ([]float32, error)
 }
 
 type geminiEmbedder struct {
@@ -87,13 +88,29 @@ func (g *geminiEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 		if end > len(texts) {
 			end = len(texts)
 		}
-		vecs, err := g.embedBatch(ctx, texts[i:end])
+		vecs, err := g.embedBatch(ctx, texts[i:end], "RETRIEVAL_DOCUMENT")
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, vecs...)
 	}
 	return out, nil
+}
+
+func (g *geminiEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	if strings.TrimSpace(text) == "" {
+		return nil, g.errf("gemini embedding: empty query")
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	vecs, err := g.embedBatch(ctx, []string{text}, "RETRIEVAL_QUERY")
+	if err != nil {
+		return nil, err
+	}
+	if len(vecs) == 0 {
+		return nil, g.errf("gemini embedding: empty query response")
+	}
+	return vecs[0], nil
 }
 
 type embedRequestBody struct {
@@ -121,7 +138,7 @@ type embedResponseBody struct {
 	} `json:"embeddings"`
 }
 
-func (g *geminiEmbedder) embedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+func (g *geminiEmbedder) embedBatch(ctx context.Context, texts []string, taskType string) ([][]float32, error) {
 	model := g.model
 	if model == "" {
 		model = defaultEmbedModel
@@ -136,7 +153,7 @@ func (g *geminiEmbedder) embedBatch(ctx context.Context, texts []string) ([][]fl
 			Content: embedContent{
 				Parts: []embedPart{{Text: t}},
 			},
-			TaskType:             "RETRIEVAL_DOCUMENT",
+			TaskType:             taskType,
 			OutputDimensionality: EmbeddingDim,
 		}
 	}
